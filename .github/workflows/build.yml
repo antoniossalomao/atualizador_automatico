@@ -1,0 +1,62 @@
+name: Build C# EXE
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Baixar o código do repositório
+      uses: actions/checkout@v7
+
+    - name: Configurar o .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Compilar o projeto
+      run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./pasta_saida
+
+    # O agente exige o 7za.exe ao lado do executavel: ExtractionService lanca
+    # excecao se nao achar, e o ciclo de atualizacao aborta. Como o 7za.exe e'
+    # binario de terceiro (fica fora do repositorio, ver .gitignore), sem este
+    # passo o artefato compilava mas nao funcionava em cliente nenhum.
+    #
+    # A versao esta fixada de proposito: assim o pacote gerado hoje e o gerado
+    # daqui a um ano sao identicos. Quando quiser subir de versao, troque o
+    # numero aqui (o site publica em https://www.7-zip.org/download.html).
+    - name: Incluir o 7za.exe no pacote
+      shell: pwsh
+      run: |
+        $url = "https://www.7-zip.org/a/7z2602-extra.7z"
+        Invoke-WebRequest -Uri $url -OutFile "7z-extra.7z"
+        # O proprio runner do Windows ja tem o 7-Zip instalado, entao da para
+        # descompactar o pacote que contem o 7za.exe.
+        7z x "7z-extra.7z" -o7z-extra -y
+        $origem = Get-ChildItem -Path "7z-extra" -Recurse -Filter "7za.exe" |
+                  Where-Object { $_.FullName -notmatch "x64|arm64" } |
+                  Select-Object -First 1
+        if (-not $origem) { throw "7za.exe nao encontrado dentro do pacote baixado." }
+        Copy-Item $origem.FullName -Destination "./pasta_saida/7za.exe"
+        Write-Host "7za.exe incluido a partir de $($origem.FullName)"
+
+    - name: Conferir o conteúdo do pacote
+      shell: pwsh
+      run: |
+        # Falha cedo e com mensagem clara se algo essencial nao estiver la,
+        # em vez de publicar um artefato incompleto com o build verde.
+        foreach ($obrigatorio in @("AtualizadorERP.exe", "7za.exe")) {
+          if (-not (Test-Path "./pasta_saida/$obrigatorio")) {
+            throw "Faltando no pacote: $obrigatorio"
+          }
+        }
+        Get-ChildItem ./pasta_saida | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+
+    - name: Disponibilizar o pacote para download
+      uses: actions/upload-artifact@v7
+      with:
+        name: AtualizadorAutomatico-EXE
+        path: ./pasta_saida/
