@@ -1,0 +1,30 @@
+# --- Saida de compilacao do .NET ---
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# --- Ferramentas de terceiros que o agente usa em runtime ---
+# O 7za.exe precisa ficar ao lado do executavel publicado, mas e' um binario
+# de terceiros: cada ambiente baixa o seu (ver README).
+7za.exe
+BScript.exe
+BScript_atual.exe
+
+# --- Estado local do agente, nunca compartilhado ---
+versao_anterior.txt
+
+# --- REDE DE SEGURANCA: dados reais de cliente ---
+# Bancos Firebird e backups jamais devem entrar neste repositorio. Estas
+# linhas existem porque a pasta de trabalho original ficava ao lado de copias
+# de producao (BEXE.FDB, JUNIOR.fdb) -- um "git add ." distraido mandaria
+# executaveis e dados de clientes para o GitHub, e no Git remover depois nao
+# apaga do historico.
+*.fdb
+*.FDB
+*.fbk
+*.FBK
+*.ini
+*.Ini
+*.INI
