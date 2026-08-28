@@ -55,8 +55,28 @@ jobs:
         }
         Get-ChildItem ./pasta_saida | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 
+    # O GitHub SEMPRE entrega o artefato dentro de um .zip -- isso nao da para
+    # desligar. Mas zipar um .7z que ja esta comprimido nao acrescenta nada,
+    # entao compactar aqui dentro faz o download cair de ~30 MB para ~21 MB.
+    #
+    # Medido nesta maquina, com o executavel real:
+    #   zip(exe cru) ........................ 30.1 MB  (era o que vinha antes)
+    #   zip(exe com EnableCompressionInSingleFile) 29.6 MB
+    #   zip(7z do exe com aquela opcao ligada) ... 28.0 MB
+    #   zip(7z do exe cru) .................. 21.1 MB  <- este
+    #
+    # Repare que ligar EnableCompressionInSingleFile PIORA o resultado final:
+    # o .NET comprime os assemblies por dentro, e o 7z depois nao tem mais o
+    # que espremer. Comprimir duas vezes rende menos que comprimir uma vez bem.
+    - name: Compactar o pacote em .7z
+      shell: pwsh
+      run: 7z a -t7z -mx=9 -m0=lzma2 AtualizadorAutomatico.7z ./pasta_saida/*
+
     - name: Disponibilizar o pacote para download
       uses: actions/upload-artifact@v7
       with:
         name: AtualizadorAutomatico-EXE
-        path: ./pasta_saida/
+        path: AtualizadorAutomatico.7z
+        # O conteudo ja esta comprimido; relevar o zip do GitHub economiza
+        # tempo de CPU sem custar tamanho nenhum.
+        compression-level: 0
