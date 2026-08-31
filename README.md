@@ -35,9 +35,11 @@ confere o **SHA-256** de cada um, extrai com o `7za.exe` e grava `PENDENTE`.
 perguntar ao usuário e gravar `AUTORIZADO`. Sem isso o ciclo trava aqui.
 
 ### Fase 3 — Execução crítica
-`gfix -shut force_0` (isola o banco) → `gbak` (backup pré) → `ScriptRunnerService`
-(aplica cada `.sql` pendente do pacote, num processo `isql` isolado por arquivo —
-ver [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)) → `gbak` (backup pós).
+`gfix -shut multi -force 0` (isola o banco, mantendo acesso SYSDBA) → `gbak`
+(backup pré) → `ScriptRunnerService` (aplica cada `.sql` pendente do pacote, num
+processo `isql` isolado por arquivo — ver
+[RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)) → injeção dos binários no
+`BEXE.fdb` → `gfix -online` → `gbak` (backup pós, já com o banco de volta ao ar).
 
 ### Fase 4 — Distribuição
 Grava os executáveis novos como BLOB na tabela `EXECUTAVEIS` do `BEXE.fdb`

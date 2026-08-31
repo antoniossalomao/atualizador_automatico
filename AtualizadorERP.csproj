@@ -13,4 +13,19 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- O glob padrão do SDK ("**/*.cs") só exclui bin/obj na raiz deste projeto, não os do
+       AtualizadorERP.Tests aninhado. Sem isso, o build principal tentava compilar os testes
+       (sem referência ao xUnit) e colidia com o AssemblyInfo gerado no obj/ dos testes. -->
+  <ItemGroup>
+    <Compile Remove="AtualizadorERP.Tests\**" />
+    <Compile Remove="**\bin\**" />
+    <Compile Remove="**\obj\**" />
+    <None Remove="AtualizadorERP.Tests\**" />
+    <None Remove="**\bin\**" />
+    <None Remove="**\obj\**" />
+    <EmbeddedResource Remove="AtualizadorERP.Tests\**" />
+    <EmbeddedResource Remove="**\bin\**" />
+    <EmbeddedResource Remove="**\obj\**" />
+  </ItemGroup>
+
 </Project>

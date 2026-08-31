@@ -116,7 +116,10 @@ public class Worker : BackgroundService
         return TimeSpan.FromMinutes(minutos);
     }
 
-    private async Task ProcessarAtualizacao(CancellationToken stoppingToken)
+    // internal, não private: permite o teste de integração de ponta a ponta (Fase 3/4 contra
+    // Firebird real) chamar exatamente o mesmo caminho de código do serviço, em vez de duplicar a
+    // orquestração no teste -- ver AtualizadorERP.Tests/WorkerIntegrationTests.cs.
+    internal async Task ProcessarAtualizacao(CancellationToken stoppingToken)
     {
         string preBkp = Path.Combine(_tempPath, "JUNIOR_PRE.fbk");
         if (string.IsNullOrWhiteSpace(_dbPassword))
