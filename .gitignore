@@ -11,6 +11,10 @@ obj/
 7za.exe
 BScript.exe
 BScript_atual.exe
+b_Atualizador.exe
+
+# --- Dados legados do cliente, nao codigo do agente ---
+Scripts-BVendas/
 
 # --- Estado local do agente, nunca compartilhado ---
 versao_anterior.txt

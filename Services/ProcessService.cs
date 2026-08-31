@@ -22,7 +22,14 @@ public class ProcessService
     /// o banco fica em "-shut force_0" (bloqueado para todo mundo) até alguém notar e matar o
     /// processo manualmente no servidor do cliente.
     /// </summary>
-    public async Task RunProcessAsync(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken = default)
+    /// <param name="environmentVariables">
+    /// Credenciais e afins que não devem aparecer na linha de comando (visível a qualquer
+    /// processo local via Gerenciador de Tarefas ou WMI enquanto a ferramenta roda). O Firebird
+    /// já sabe ler ISC_USER/ISC_PASSWORD do ambiente do processo como alternativa a "-user"/
+    /// "-password" -- confirmado contra um banco real antes de trocar todo mundo (gfix, gbak,
+    /// isql) a usar isso.
+    /// </param>
+    public async Task RunProcessAsync(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string>? environmentVariables = null)
     {
         _logger.LogInformation("Executando ferramenta: {file}", fileName);
 
@@ -35,6 +42,10 @@ public class ProcessService
             RedirectStandardError = true,
         };
         foreach (var arg in arguments) processInfo.ArgumentList.Add(arg);
+        if (environmentVariables != null)
+        {
+            foreach (var (chave, valor) in environmentVariables) processInfo.Environment[chave] = valor;
+        }
 
         using var process = Process.Start(processInfo) ?? throw new InvalidOperationException($"Não foi possível iniciar {fileName}.");
         Task<string> outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);

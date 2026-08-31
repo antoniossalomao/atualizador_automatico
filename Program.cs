@@ -14,6 +14,7 @@ IHost host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<DatabaseService>();
         services.AddSingleton<ExtractionService>();
         services.AddSingleton<ProcessService>();
+        services.AddSingleton<ScriptRunnerService>();
     })
     .Build();
 

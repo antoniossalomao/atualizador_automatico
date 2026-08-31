@@ -12,6 +12,7 @@ public class Worker : BackgroundService
     private readonly DatabaseService _databaseService;
     private readonly ExtractionService _extractionService;
     private readonly ProcessService _processService;
+    private readonly ScriptRunnerService _scriptRunnerService;
 
     private readonly string _cnpjCliente = Environment.GetEnvironmentVariable("ATUALIZADOR_CNPJ") ?? "";
     private readonly string _tempPath = Environment.GetEnvironmentVariable("ATUALIZADOR_TEMP_PATH") ?? @"C:\TempUpdates";
@@ -19,34 +20,23 @@ public class Worker : BackgroundService
     private readonly string _bexeFdbPath = Environment.GetEnvironmentVariable("ATUALIZADOR_BEXE_FDB") ?? @"C:\ERP\BEXE.fdb";
     private readonly string _gfixPath = Environment.GetEnvironmentVariable("ATUALIZADOR_GFIX_PATH") ?? @"C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gfix.exe";
     private readonly string _gbakPath = Environment.GetEnvironmentVariable("ATUALIZADOR_GBAK_PATH") ?? @"C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gbak.exe";
-    private readonly string _bscriptPath = Environment.GetEnvironmentVariable("ATUALIZADOR_BSCRIPT_PATH") ?? @"C:\ERP\BScript.exe";
     private readonly string _dbUser = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_USER") ?? "SYSDBA";
     private readonly string _dbPassword = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_PASSWORD") ?? "";
-
-    // Não há confirmação de que o BScript.exe real aceite rodar de forma verdadeiramente
-    // não-interativa -- por isso ele roda sob um teto de tempo. Se travar numa janela que
-    // ninguém pode ver (serviço Windows não tem desktop interativo), o processo é morto e a
-    // atualização cai em ERRO com rollback, em vez de deixar o banco em shutdown para sempre.
-    private static readonly TimeSpan BScriptTimeout = TimeSpan.FromMinutes(10);
+    private readonly string _dbPort = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_PORT") ?? "3050";
 
     private static readonly TimeSpan GfixTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan GbakTimeout = TimeSpan.FromMinutes(15);
 
-    // Guarda, fora do JUNIOR.fdb, qual era a última versão confirmada antes de começar a
-    // tentar a atual. Sem isso, uma falha na Fase 3 não tem para qual valor reverter o
-    // VERSAO_NOVA -- e o próximo polling passa a enxergar o cliente como "em dia" mesmo a
-    // atualização nunca tendo sido aplicada de fato.
-    private readonly string _versaoAnteriorFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "versao_anterior.txt");
-
     private int _falhasConsecutivas = 0;
 
-    public Worker(ILogger<Worker> logger, ApiService apiService, DatabaseService databaseService, ExtractionService extractionService, ProcessService processService)
+    public Worker(ILogger<Worker> logger, ApiService apiService, DatabaseService databaseService, ExtractionService extractionService, ProcessService processService, ScriptRunnerService scriptRunnerService)
     {
         _logger = logger;
         _apiService = apiService;
         _databaseService = databaseService;
         _extractionService = extractionService;
         _processService = processService;
+        _scriptRunnerService = scriptRunnerService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -61,7 +51,11 @@ public class Worker : BackgroundService
                     if (string.IsNullOrWhiteSpace(_cnpjCliente))
                         throw new InvalidOperationException("Defina ATUALIZADOR_CNPJ antes de iniciar o agente.");
 
-                    string versaoAtual = _databaseService.GetVersaoAtual(_juniorFdbPath);
+                    // VERSAO_ATUAL, não VERSAO_NOVA: é a última versão CONFIRMADA (só muda depois
+                    // de uma Fase 3 com sucesso de verdade, ver ConfirmarVersaoAtual). Continua
+                    // valendo mesmo que uma tentativa anterior tenha falhado no meio -- por isso
+                    // não precisa de um arquivo solto fora do banco pra "lembrar" pra onde reverter.
+                    string versaoAtual = _databaseService.GetVersaoConfirmada(_juniorFdbPath);
                     var updateInfo = await _apiService.CheckForUpdates(_cnpjCliente, versaoAtual);
                     if (updateInfo?.HasUpdate == true)
                     {
@@ -73,22 +67,19 @@ public class Worker : BackgroundService
                         // nos terminais.
                         if (Directory.Exists(PastaPacotes)) Directory.Delete(PastaPacotes, true);
                         Directory.CreateDirectory(PastaPacotes);
-                        var baixados = await _apiService.DownloadPackages(updateInfo.Packages, PastaPacotes);
+                        var baixados = await _apiService.DownloadPackages(updateInfo.Packages, PastaPacotes, stoppingToken);
                         await _extractionService.ExtractAllAsync(baixados, PastaPacotes, stoppingToken);
 
-                        // O contrato da API já previa distribuir o próprio BScript.exe via
-                        // "script_url" -- baixa aqui, na Fase 1, para a Fase 3 não depender de
-                        // rede durante a janela crítica em que o banco já está isolado.
-                        if (!string.IsNullOrWhiteSpace(updateInfo.ScriptUrl))
-                        {
-                            await _apiService.DownloadFileAsync(updateInfo.ScriptUrl, CaminhoBScriptBaixado, stoppingToken);
-                        }
-
-                        await File.WriteAllTextAsync(_versaoAnteriorFile, versaoAtual, stoppingToken);
                         _databaseService.SetStatusAtualizacao(_juniorFdbPath, "PENDENTE", updateInfo.Version);
                     }
 
-                    _falhasConsecutivas = 0; // chegou até aqui sem exceção: ciclo saudável
+                    // Só zera aqui se já estava "CONCLUIDO" -- só polling HTTP rodou, de fato
+                    // saudável. Vindo de "ERRO", zerar aqui apagaria o backoff da falha da Fase 3
+                    // assim que o próximo ciclo re-enfileirasse a MESMA atualização como PENDENTE:
+                    // o agente voltaria a bater a cada 10s numa atualização que já sabemos que
+                    // falha, e o backoff só protegeria contra falha de download, nunca de
+                    // atualização (só ProcessarAtualizacao pode zerar depois de um sucesso real).
+                    if (statusAtual == "CONCLUIDO") _falhasConsecutivas = 0;
                 }
                 else if (statusAtual == "AUTORIZADO")
                 {
@@ -107,20 +98,13 @@ public class Worker : BackgroundService
         }
     }
 
-    // Só o conteúdo dos pacotes da versão fica aqui -- e é exatamente esta pasta
-    // que a Fase 4 varre atrás de "*.exe" para injetar no BEXE.fdb. Ferramentas
-    // do próprio agente (o BScript baixado) e os backups do gbak ficam de fora,
-    // na raiz de _tempPath.
-    //
-    // Sem essa separação, o BScript_atual.exe baixado via "script_url" caía na
-    // mesma varredura e era gravado na tabela EXECUTAVEIS como se fosse um
-    // executável do ERP -- os terminais o baixariam achando que era atualização
-    // deles. A varredura não pode ser substituída por uma lista em memória
-    // porque Fase 1 e Fase 4 acontecem em ciclos diferentes (podendo ter um
-    // reinício do serviço no meio), então quem separa é o layout de pastas.
+    // Só o conteúdo dos pacotes da versão fica aqui -- e é exatamente esta pasta que a Fase 4
+    // varre atrás de "*.exe" para injetar no BEXE.fdb, e que o ScriptRunnerService varre atrás
+    // de "*.sql" para aplicar na Fase 3. Os backups do gbak ficam de fora, na raiz de _tempPath.
+    // A varredura não pode ser substituída por uma lista em memória porque Fase 1 e Fase 4
+    // acontecem em ciclos diferentes (podendo ter um reinício do serviço no meio), então quem
+    // separa é o layout de pastas.
     private string PastaPacotes => Path.Combine(_tempPath, "pacotes");
-
-    private string CaminhoBScriptBaixado => Path.Combine(_tempPath, "BScript_atual.exe");
 
     // Backoff simples: 10s no caminho saudável; cresce até 30 minutos em falhas seguidas, para
     // não martelar disco/rede/API a cada 10 segundos quando algo está persistentemente quebrado
@@ -137,7 +121,19 @@ public class Worker : BackgroundService
         string preBkp = Path.Combine(_tempPath, "JUNIOR_PRE.fbk");
         if (string.IsNullOrWhiteSpace(_dbPassword))
             throw new InvalidOperationException("Defina ATUALIZADOR_DB_PASSWORD antes de atualizar o banco.");
-        string[] credenciais = { "-user", _dbUser, "-password", _dbPassword };
+
+        // ISC_USER/ISC_PASSWORD via ambiente do processo, não "-user"/"-password" na linha de
+        // comando: qualquer processo local lê a linha de comando de outro via Gerenciador de
+        // Tarefas ou WMI, mas não o ambiente de um processo alheio.
+        var credenciaisEnv = new Dictionary<string, string> { ["ISC_USER"] = _dbUser, ["ISC_PASSWORD"] = _dbPassword };
+
+        // "localhost/{porta}:", não o caminho puro -- testado que gfix/gbak com caminho puro
+        // resolvem pelo provedor local/XNET, que numa máquina com mais de uma versão do Firebird
+        // instalada pode não ser a mesma instância que ATUALIZADOR_DB_PORT aponta (achado
+        // testando: caminho puro caiu numa instância de ODS mais antigo, "unsupported on-disk
+        // structure"). Consistente com o que DatabaseService já faz para toda conexão via
+        // FbConnection.
+        string alvoJunior = $"localhost/{_dbPort}:{_juniorFdbPath}";
 
         // Só um backup gerado com sucesso NESTA tentativa pode ser restaurado.
         //
@@ -154,25 +150,46 @@ public class Worker : BackgroundService
             if (File.Exists(preBkp)) File.Delete(preBkp);
 
             _databaseService.SetStatusAtualizacao(_juniorFdbPath, "PROCESSANDO", null);
-            await _processService.RunProcessAsync(_gfixPath, credenciais.Concat(new[] { "-shut", "force_0", _juniorFdbPath }).ToArray(), GfixTimeout, stoppingToken);
+            // "multi" (manutenção multiusuário), não "full": testado que "full" bloqueia até o
+            // SYSDBA -- o isql do ScriptRunnerService (linha abaixo) nunca conseguiria conectar
+            // pra aplicar os scripts. "multi" isola os terminais do ERP (usuários comuns) e ainda
+            // permite conexão administrativa, que é o que a Fase 3 precisa. Também corrigido:
+            // "-shut force_0" (um token só) nunca foi sintaxe válida do gfix -- testado que dá
+            // "Target shutdown mode is invalid"; o certo é "-shut <modo> -force <segundos>"
+            // como dois parâmetros separados.
+            await _processService.RunProcessAsync(_gfixPath, new[] { "-shut", "multi", "-force", "0", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
 
-            await _processService.RunProcessAsync(_gbakPath, new[] { "-b" }.Concat(credenciais).Concat(new[] { _juniorFdbPath, preBkp }).ToArray(), GbakTimeout, stoppingToken);
+            await _processService.RunProcessAsync(_gbakPath, new[] { "-b", alvoJunior, preBkp }, GbakTimeout, stoppingToken, credenciaisEnv);
             backupValido = true;
 
-            string scriptParaRodar = File.Exists(CaminhoBScriptBaixado) ? CaminhoBScriptBaixado : _bscriptPath;
-            await _processService.RunProcessAsync(scriptParaRodar, new[] { "/silent", $"/db={_juniorFdbPath}" }, BScriptTimeout, stoppingToken);
-
-            string posBkp = Path.Combine(_tempPath, "JUNIOR_POS.fbk");
-            await _processService.RunProcessAsync(_gbakPath, new[] { "-b" }.Concat(credenciais).Concat(new[] { _juniorFdbPath, posBkp }).ToArray(), GbakTimeout, stoppingToken);
+            int scriptsComFalha = await _scriptRunnerService.RunPendingScriptsAsync(_juniorFdbPath, PastaPacotes, _cnpjCliente, stoppingToken);
 
             string versaoNova = _databaseService.GetVersaoAtual(_juniorFdbPath);
             _databaseService.InjetarNovosBinarios(_bexeFdbPath, PastaPacotes, versaoNova);
-            await _processService.RunProcessAsync(_gfixPath, credenciais.Concat(new[] { "-online", _juniorFdbPath }).ToArray(), GfixTimeout, stoppingToken);
+            await _processService.RunProcessAsync(_gfixPath, new[] { "-online", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
 
-            _databaseService.SetStatusAtualizacao(_juniorFdbPath, "CONCLUIDO", null);
-            await _apiService.SendLog(_cnpjCliente, "SUCESSO", "Atualização concluída com sucesso.");
+            // Backup pós-atualização depois do "-online", não antes: nada lê o JUNIOR_POS.fbk
+            // (é apagado poucas linhas abaixo, no Directory.Delete(_tempPath, true)), então ele
+            // não tinha motivo pra estar dentro da janela de shutdown -- só somava até 15 min de
+            // indisponibilidade jogada fora. Com o banco já online, essa cópia roda sem afetar
+            // os terminais do ERP.
+            string posBkp = Path.Combine(_tempPath, "JUNIOR_POS.fbk");
+            await _processService.RunProcessAsync(_gbakPath, new[] { "-b", alvoJunior, posBkp }, GbakTimeout, stoppingToken, credenciaisEnv);
+
+            // VERSAO_ATUAL só avança pra VERSAO_NOVA aqui -- na Fase 3 concluída de verdade. Se
+            // qualquer passo acima (gfix/gbak/scripts/injeção) tivesse lançado, essa linha nunca
+            // roda e VERSAO_ATUAL continua no valor de antes, sem precisar reverter nada.
+            _databaseService.ConfirmarVersaoAtual(_juniorFdbPath);
+
+            // "CONCLUIDO" mesmo com scripts pulados: cada um já foi reportado à API na hora, pelo
+            // próprio ScriptRunnerService, e não faz sentido reverter os milhares que aplicaram
+            // certo por causa de um punhado de scripts legados com nome divergente do schema real.
+            string mensagemFinal = scriptsComFalha > 0
+                ? $"Atualização concluída com {scriptsComFalha} script(s) pulado(s) por erro -- ver detalhes nos retornos individuais."
+                : "Atualização concluída com sucesso.";
+            _databaseService.SetStatusAtualizacao(_juniorFdbPath, "CONCLUIDO", null, scriptsComFalha > 0 ? mensagemFinal : null);
+            await _apiService.SendLog(_cnpjCliente, "SUCESSO", mensagemFinal);
             if (Directory.Exists(_tempPath)) Directory.Delete(_tempPath, true);
-            if (File.Exists(_versaoAnteriorFile)) File.Delete(_versaoAnteriorFile);
             _falhasConsecutivas = 0;
         }
         catch (Exception ex)
@@ -182,21 +199,23 @@ public class Worker : BackgroundService
             {
                 if (backupValido && File.Exists(preBkp))
                 {
-                    await _processService.RunProcessAsync(_gbakPath, new[] { "-c", "-replace_database" }.Concat(credenciais).Concat(new[] { preBkp, _juniorFdbPath }).ToArray(), GbakTimeout, stoppingToken);
+                    await _processService.RunProcessAsync(_gbakPath, new[] { "-c", "-replace_database", preBkp, alvoJunior }, GbakTimeout, stoppingToken, credenciaisEnv);
                 }
-                await _processService.RunProcessAsync(_gfixPath, credenciais.Concat(new[] { "-online", _juniorFdbPath }).ToArray(), GfixTimeout, stoppingToken);
+                // Testado: depois de "-c -replace_database", o banco resultante já fica acessível
+                // sozinho -- esse "-online" aqui frequentemente falha com "Target shutdown mode is
+                // invalid" (não há shutdown nenhum pra tirar), mesmo o banco já estando utilizável.
+                // Por isso fica dentro do try/catch: uma falha aqui não indica necessariamente que
+                // o banco ficou inacessível, só que não havia shutdown ativo pra desfazer.
+                await _processService.RunProcessAsync(_gfixPath, new[] { "-online", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
             }
             catch (Exception onlineError)
             {
-                _logger.LogError(onlineError, "Não foi possível colocar o banco online após a falha.");
+                _logger.LogError(onlineError, "gfix -online falhou após a falha original -- pode só significar que o banco já não estava em shutdown (comum após um restore).");
             }
 
-            // Reverte VERSAO_NOVA para a última versão confirmada antes desta tentativa. Sem
-            // isso, o próximo polling compararia a versão publicada com o valor que ficou
-            // gravado na Fase 1 (a versão-alvo que falhou) e concluiria, errado, que o cliente
-            // já está em dia -- parando de tentar para sempre.
-            string? versaoParaReverter = File.Exists(_versaoAnteriorFile) ? await File.ReadAllTextAsync(_versaoAnteriorFile, stoppingToken) : null;
-            _databaseService.SetStatusAtualizacao(_juniorFdbPath, "ERRO", versaoParaReverter, ex.Message);
+            // Sem revert de versão pra fazer aqui: VERSAO_ATUAL só é avançada em
+            // ConfirmarVersaoAtual, no caminho de sucesso -- se caiu aqui, ela nunca mudou.
+            _databaseService.SetStatusAtualizacao(_juniorFdbPath, "ERRO", null, ex.Message);
             await _apiService.SendLog(_cnpjCliente, "ERRO", ex.Message);
             _falhasConsecutivas++;
         }

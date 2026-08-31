@@ -12,37 +12,36 @@ public class ApiService
 
     public ApiService()
     {
-        _httpClient = new HttpClient();
+        // Sem timeout do HttpClient: o padrão de 100s do .NET matava downloads de pacotes
+        // grandes em links de cliente ruins. Quem cancela agora é o CancellationToken passado
+        // até aqui a partir do stoppingToken do Worker -- inclusive permite parar o serviço no
+        // meio de um download, o que o timeout fixo não permitia.
+        _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _baseUrl = (Environment.GetEnvironmentVariable("ATUALIZADOR_API_URL") ?? "http://localhost:3000/api").TrimEnd('/');
         _agentToken = Environment.GetEnvironmentVariable("ATUALIZADOR_API_TOKEN") ?? "";
         if (string.IsNullOrWhiteSpace(_agentToken))
             throw new InvalidOperationException("Defina ATUALIZADOR_API_TOKEN antes de iniciar o agente.");
     }
 
+    // Propaga qualquer falha (401 de token errado, DNS morto, JSON inválido) em vez de engolir
+    // e devolver null: um retorno "sem atualização" tem que significar isso de verdade, não
+    // "a checagem quebrou". O catch em Worker.ExecuteAsync já loga a exceção real e incrementa
+    // _falhasConsecutivas -- antes disso, uma API fora do ar era indistinguível de um ciclo são,
+    // e o cliente ficava invisível sem log local nem backoff.
     public async Task<UpdateResponse?> CheckForUpdates(string cnpj, string versaoAtual)
     {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(cnpj)}?versao={Uri.EscapeDataString(versaoAtual)}");
-            request.Headers.Add("X-Agent-Token", _agentToken);
-            var response = await _httpClient.SendAsync(request);
-            if (response.IsSuccessStatusCode)
-            {
-                var json = await response.Content.ReadAsStringAsync();
-                return JsonSerializer.Deserialize<UpdateResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-        }
-        catch (Exception)
-        {
-            // Ignorar falhas de rede no polling
-        }
-        return null;
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(cnpj)}?versao={Uri.EscapeDataString(versaoAtual)}");
+        request.Headers.Add("X-Agent-Token", _agentToken);
+        var response = await _httpClient.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync();
+        return JsonSerializer.Deserialize<UpdateResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
     }
 
     /// <summary>Baixa os pacotes de uma versão, valida o SHA-256 de cada um e devolve os
     /// caminhos locais -- usados depois para saber exatamente o que extrair, sem precisar
     /// adivinhar por extensão de arquivo.</summary>
-    public async Task<List<string>> DownloadPackages(List<PackageInfo> packages, string destinationPath)
+    public async Task<List<string>> DownloadPackages(List<PackageInfo> packages, string destinationPath, CancellationToken cancellationToken = default)
     {
         var caminhos = new List<string>();
         foreach (var pkg in packages)
@@ -52,7 +51,7 @@ public class ApiService
                 throw new InvalidOperationException($"Nome de pacote inválido: {pkg.File}");
             string filePath = Path.Combine(destinationPath, fileName);
             string downloadUrl = Uri.TryCreate(pkg.Url, UriKind.Absolute, out _) ? pkg.Url : $"{_baseUrl}/{pkg.Url.TrimStart('/')}";
-            await BaixarArquivoAutenticadoAsync(downloadUrl, filePath);
+            await BaixarArquivoAutenticadoAsync(downloadUrl, filePath, cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(pkg.Sha256))
             {
@@ -64,18 +63,6 @@ public class ApiService
             caminhos.Add(filePath);
         }
         return caminhos;
-    }
-
-    /// <summary>
-    /// Baixa um arquivo avulso autenticado com o token do agente. Existe porque o contrato da
-    /// API já previa um "script_url" por versão publicada, mas o agente nunca chegava a lê-lo
-    /// nem baixá-lo -- o BScript.exe usado era sempre o que já estava fixo no servidor do
-    /// cliente, exigindo cópia manual sempre que o próprio script precisasse mudar.
-    /// </summary>
-    public Task DownloadFileAsync(string url, string destinationPath, CancellationToken cancellationToken = default)
-    {
-        string downloadUrl = Uri.TryCreate(url, UriKind.Absolute, out _) ? url : $"{_baseUrl}/{url.TrimStart('/')}";
-        return BaixarArquivoAutenticadoAsync(downloadUrl, destinationPath, cancellationToken);
     }
 
     private async Task BaixarArquivoAutenticadoAsync(string downloadUrl, string filePath, CancellationToken cancellationToken = default)

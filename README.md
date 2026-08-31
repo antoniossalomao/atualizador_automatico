@@ -5,11 +5,14 @@ do cliente: consulta uma API central, baixa e valida os pacotes da versão nova,
 espera a autorização do usuário (dada pelo próprio ERP em Delphi), isola o banco
 Firebird, aplica os scripts, distribui os executáveis novos e devolve o banco ao ar.
 
-> **Estado: pré-piloto.** Compila, o fluxo principal está implementado e os bugs
-> críticos conhecidos foram corrigidos — mas **não deve rodar em cliente real
-> ainda**: a automação depende de o `BScript.exe` aceitar linha de comando, o que
-> não está confirmado. Leia [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md) antes de
-> qualquer coisa — é o documento mais importante deste repositório.
+> **Estado: pré-piloto.** Compila, o fluxo principal está implementado, os bugs
+> críticos conhecidos foram corrigidos e a Fase 3 não depende mais do
+> `BScript.exe` (confirmado, em teste real, que ele não roda headless — ver
+> [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)). Ainda **não deve rodar em
+> cliente real**: faltam a Fase 2 (autorização pelo ERP Delphi) e triagem dos
+> scripts antigos que já foram aplicados fora do controle da tabela `SCRIPTS`.
+> Leia [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md) antes de qualquer coisa — é
+> o documento mais importante deste repositório.
 
 ## Como funciona
 
@@ -25,16 +28,16 @@ tabela `SYS_ATUALIZACAO`, no `JUNIOR.fdb` do cliente.
 
 ### Fase 1 — Preparo invisível
 Consulta a API com CNPJ e versão atual; se houver versão nova, baixa os pacotes,
-confere o **SHA-256** de cada um, extrai com o `7za.exe`, baixa o `BScript.exe`
-da versão (se a API mandar `script_url`) e grava `PENDENTE`.
+confere o **SHA-256** de cada um, extrai com o `7za.exe` e grava `PENDENTE`.
 
 ### Fase 2 — Decisão do usuário
 **Não implementada neste repositório.** Cabe ao ERP Delphi ler `PENDENTE`,
 perguntar ao usuário e gravar `AUTORIZADO`. Sem isso o ciclo trava aqui.
 
 ### Fase 3 — Execução crítica
-`gfix -shut force_0` (isola o banco) → `gbak` (backup pré) → `BScript.exe`
-(aplica os scripts) → `gbak` (backup pós).
+`gfix -shut force_0` (isola o banco) → `gbak` (backup pré) → `ScriptRunnerService`
+(aplica cada `.sql` pendente do pacote, num processo `isql` isolado por arquivo —
+ver [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)) → `gbak` (backup pós).
 
 ### Fase 4 — Distribuição
 Grava os executáveis novos como BLOB na tabela `EXECUTAVEIS` do `BEXE.fdb`
@@ -64,12 +67,12 @@ mensagem em `MENSAGEM_LOG` e reverte `VERSAO_NOVA` para a versão anterior.
 ## Requisitos
 
 - **.NET 8 SDK** (para compilar) ou Runtime (para rodar)
-- **Firebird 2.5** instalado no servidor do cliente, com `gfix.exe` e `gbak.exe`
+- **Firebird 2.5** instalado no servidor do cliente, com `gfix.exe`, `gbak.exe`
+  e `isql.exe`
 - **`7za.exe`** ao lado do executável publicado — baixe em
   [7-zip.org/download.html](https://www.7-zip.org/download.html) (pacote "7-Zip Extra").
   Sem ele o ciclo aborta de propósito, em vez de marcar uma atualização como
   pronta sem os arquivos.
-- **`BScript.exe`** no servidor do cliente, ou distribuído pela API via `script_url`
 - Acesso de leitura/escrita ao `JUNIOR.fdb` e ao `BEXE.fdb`
 
 ## Configuração
@@ -90,7 +93,7 @@ nenhuma credencial embutida**. Num serviço Windows, o lugar natural é o
 | `ATUALIZADOR_BEXE_FDB` | `C:\ERP\BEXE.fdb` | |
 | `ATUALIZADOR_GFIX_PATH` | `C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gfix.exe` | |
 | `ATUALIZADOR_GBAK_PATH` | `...\bin\gbak.exe` | |
-| `ATUALIZADOR_BSCRIPT_PATH` | `C:\ERP\BScript.exe` | |
+| `ATUALIZADOR_ISQL_PATH` | `...\bin\isql.exe` | |
 | `ATUALIZADOR_TEMP_PATH` | `C:\TempUpdates` | |
 
 `ATUALIZADOR_API_TOKEN` precisa bater com o `AGENT_API_TOKEN` do servidor.
@@ -134,8 +137,10 @@ Todas as chamadas mandam o header `X-Agent-Token`.
 }
 ```
 
-`update_available: false` quando não há nada novo. `script_url` é opcional — se
-vier, o agente usa esse binário na Fase 3 em vez do caminho local.
+`update_available: false` quando não há nada novo. `script_url` ainda existe no
+contrato por compatibilidade, mas o agente não lê mais esse campo — a Fase 3
+aplica os `.sql` do próprio pacote via `ScriptRunnerService`, não mais um
+binário externo (ver [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)).
 
 **`POST {API_URL}/update/log`** — `{ "cnpj": "...", "status": "SUCESSO|ERRO", "detalhes": "..." }`
 (best-effort: falha de rede aqui não interrompe nada).
@@ -148,6 +153,7 @@ Worker.cs                       o ciclo: polling, decisão de fase, orquestraç�
 Services/ApiService.cs          HTTP com a API central, validação de SHA-256
 Services/DatabaseService.cs     Firebird: estado em SYS_ATUALIZACAO, injeção de BLOB no BEXE
 Services/ExtractionService.cs   invoca o 7za.exe sobre os pacotes baixados
+Services/ScriptRunnerService.cs aplica os .sql pendentes do pacote via isql, um processo por arquivo
 Services/ProcessService.cs      executa processos externos com timeout obrigatório
 ```
 
@@ -155,7 +161,7 @@ Services/ProcessService.cs      executa processos externos com timeout obrigató
 Isso não é estilo, é segurança: a Fase 3 roda com o banco em `-shut force_0`
 (bloqueado para todos os usuários), então um processo que trava sem timeout
 deixaria o cliente inteiro parado até alguém perceber. Ver
-[RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md#1-o-bscriptexe-real-pode-não-ter-modo-de-linha-de-comando).
+[RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md).
 
 O schema real do `BEXE.fdb` (tabela `EXECUTAVEIS`) foi confirmado por engenharia
 reversa de um arquivo de produção. O do `JUNIOR.fdb` (`SYS_ATUALIZACAO`) **não** —
