@@ -36,7 +36,7 @@ public class ScriptRunnerServiceTests
         {
             File.WriteAllText(Path.Combine(pasta, "Cria_tabela_x.sql"), "CREATE TABLE TABELA_X (ID INTEGER);");
 
-            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000");
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
             Assert.Contains("Cria_tabela_x.sql", new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo));
@@ -58,10 +58,10 @@ public class ScriptRunnerServiceTests
         {
             File.WriteAllText(Path.Combine(pasta, "Cria_tabela_y.sql"), "CREATE TABLE TABELA_Y (ID INTEGER);");
 
-            await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000");
+            await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
             // Segunda rodada, mesmo pacote: não deve tentar recriar a tabela (o que falharia com
             // "already exists") -- é o próprio propósito de reaproveitar a tabela SCRIPTS.
-            int falhasSegundaRodada = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000");
+            int falhasSegundaRodada = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhasSegundaRodada);
         }
@@ -84,7 +84,7 @@ public class ScriptRunnerServiceTests
             junior.ExecutarNaoConsulta("CREATE TABLE TABELA_LEGADA (ID INTEGER);");
             File.WriteAllText(Path.Combine(pasta, "Cria_tabela_legada.sql"), "CREATE TABLE TABELA_LEGADA (ID INTEGER);");
 
-            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000");
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
             Assert.Contains("Cria_tabela_legada.sql", new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo));
@@ -105,7 +105,7 @@ public class ScriptRunnerServiceTests
             File.WriteAllText(Path.Combine(pasta, "01_quebrado.sql"), "CREATE TABLE (SINTAXE INVALIDA);");
             File.WriteAllText(Path.Combine(pasta, "02_valido.sql"), "CREATE TABLE TABELA_VALIDA (ID INTEGER);");
 
-            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000");
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(1, falhas);
             var aplicados = new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo);
@@ -132,7 +132,7 @@ public class ScriptRunnerServiceTests
             File.WriteAllText(Path.Combine(pasta, "scripts2012", "Cria_campo_x.sql"), "CREATE TABLE TABELA_2012 (ID INTEGER);");
             File.WriteAllText(Path.Combine(pasta, "scripts2016", "Cria_campo_x.sql"), "CREATE TABLE TABELA_2016 (ID INTEGER);");
 
-            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000");
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
             var aplicados = new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo);

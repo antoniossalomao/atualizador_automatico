@@ -88,6 +88,7 @@ nenhuma credencial embutida**. Num serviço Windows, o lugar natural é o
 | `ATUALIZADOR_API_URL` | `http://localhost:3000/api` | |
 | `ATUALIZADOR_API_TOKEN` | — | **sim** |
 | `ATUALIZADOR_CNPJ` | — | **sim** |
+| `ATUALIZADOR_SISTEMA` | — | **sim** |
 | `ATUALIZADOR_DB_PASSWORD` | — | **sim** |
 | `ATUALIZADOR_DB_USER` | `SYSDBA` | |
 | `ATUALIZADOR_DB_PORT` | `3050` | |
@@ -101,6 +102,17 @@ nenhuma credencial embutida**. Num serviço Windows, o lugar natural é o
 `ATUALIZADOR_API_TOKEN` precisa bater com o `AGENT_API_TOKEN` do servidor.
 Faltando qualquer uma das obrigatórias, o agente falha ao subir (`API_TOKEN`) ou
 ao entrar no ciclo — é intencional, para não rodar meio configurado.
+
+`ATUALIZADOR_SISTEMA` precisa bater, letra por letra, com o nome de um sistema
+cadastrado na aba **Sistemas** do painel web (ex.: `B_Vendas`, `B_NFe`,
+`B_Ordem`) — é o mesmo catálogo que aparece no formulário de "Preparar versão"
+da aba Distribuição. O painel mantém uma versão publicada **por sistema**, e o
+agente só recebe pacotes do sistema que ele mesmo declara: uma instância que
+atualiza o `JUNIOR.fdb`/`BEXE.fdb` do B_Vendas cuida só do B_Vendas, e uma
+máquina que roda mais de um sistema precisa de uma instância do serviço por
+sistema, cada uma com seu próprio `ATUALIZADOR_SISTEMA`. Sem essa variável, o
+agente não consegue nem consultar se há atualização — o servidor recusa a
+chamada (ver `web/docs/REVISAO_INTERFACE.md`, seção "Contrato do agente").
 
 > A porta `3050` é o padrão do Firebird, mas ambientes reais usam outras — um
 > `BScript.Ini` de produção inspecionado usava `3051`. Confira antes.

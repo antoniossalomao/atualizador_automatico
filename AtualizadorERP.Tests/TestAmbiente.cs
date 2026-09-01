@@ -30,6 +30,7 @@ public static class TestAmbiente
             Environment.SetEnvironmentVariable("ATUALIZADOR_API_URL", "http://localhost:59999/api-inexistente");
             Environment.SetEnvironmentVariable("ATUALIZADOR_API_TOKEN", "token-de-teste");
             Environment.SetEnvironmentVariable("ATUALIZADOR_CNPJ", "00000000000000");
+            Environment.SetEnvironmentVariable("ATUALIZADOR_SISTEMA", "SISTEMA_TESTE");
 
             _configurado = true;
         }

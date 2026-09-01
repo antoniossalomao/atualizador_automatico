@@ -15,6 +15,13 @@ public class Worker : BackgroundService
     private readonly ScriptRunnerService _scriptRunnerService;
 
     private readonly string _cnpjCliente = Environment.GetEnvironmentVariable("ATUALIZADOR_CNPJ") ?? "";
+    // Qual sistema (do catálogo em "sistemas", o mesmo da aba Sistemas do painel web) esta
+    // instância do agente atualiza -- ex.: "B_Vendas". Cada JUNIOR.fdb/BEXE.fdb pertence a um
+    // sistema só, então uma instância do agente cuida de um sistema só. Obrigatória: sem ela, a
+    // única alternativa seria voltar ao comportamento antigo (perguntar "qual a última versão de
+    // QUALQUER coisa", que já causou um agente instalar o pacote errado -- ver
+    // web/docs/REVISAO_INTERFACE.md).
+    private readonly string _sistema = Environment.GetEnvironmentVariable("ATUALIZADOR_SISTEMA") ?? "";
     private readonly string _tempPath = Environment.GetEnvironmentVariable("ATUALIZADOR_TEMP_PATH") ?? @"C:\TempUpdates";
     private readonly string _juniorFdbPath = Environment.GetEnvironmentVariable("ATUALIZADOR_JUNIOR_FDB") ?? @"C:\ERP\JUNIOR.fdb";
     private readonly string _bexeFdbPath = Environment.GetEnvironmentVariable("ATUALIZADOR_BEXE_FDB") ?? @"C:\ERP\BEXE.fdb";
@@ -50,13 +57,15 @@ public class Worker : BackgroundService
                 {
                     if (string.IsNullOrWhiteSpace(_cnpjCliente))
                         throw new InvalidOperationException("Defina ATUALIZADOR_CNPJ antes de iniciar o agente.");
+                    if (string.IsNullOrWhiteSpace(_sistema))
+                        throw new InvalidOperationException("Defina ATUALIZADOR_SISTEMA antes de iniciar o agente.");
 
                     // VERSAO_ATUAL, não VERSAO_NOVA: é a última versão CONFIRMADA (só muda depois
                     // de uma Fase 3 com sucesso de verdade, ver ConfirmarVersaoAtual). Continua
                     // valendo mesmo que uma tentativa anterior tenha falhado no meio -- por isso
                     // não precisa de um arquivo solto fora do banco pra "lembrar" pra onde reverter.
                     string versaoAtual = _databaseService.GetVersaoConfirmada(_juniorFdbPath);
-                    var updateInfo = await _apiService.CheckForUpdates(_cnpjCliente, versaoAtual);
+                    var updateInfo = await _apiService.CheckForUpdates(_cnpjCliente, _sistema, versaoAtual);
                     if (updateInfo?.HasUpdate == true)
                     {
                         // Começa de uma pasta vazia: o _tempPath só é limpo no caminho de
@@ -138,6 +147,16 @@ public class Worker : BackgroundService
         // FbConnection.
         string alvoJunior = $"localhost/{_dbPort}:{_juniorFdbPath}";
 
+        // Lidas ANTES do shutdown (gfix -shut, logo abaixo): depois dele qualquer conexão nova
+        // fica bloqueada até o "-online" (sucesso ou falha), e o SendLog de resultado -- dando
+        // certo ou errado -- precisa das duas pra reportar "de X para Y" ao painel de Distribuição.
+        // "versaoAlvo" é VERSAO_NOVA, já definida no banco desde a Fase 1 (quando o Worker achou a
+        // atualização e chamou SetStatusAtualizacao com o Version do CheckForUpdates) -- por isso
+        // continua disponível mesmo que esta tentativa falhe antes de instalar nada.
+        string versaoAnterior = _databaseService.GetVersaoConfirmada(_juniorFdbPath);
+        string versaoAlvo = _databaseService.GetVersaoAtual(_juniorFdbPath);
+        var cronometro = System.Diagnostics.Stopwatch.StartNew();
+
         // Só um backup gerado com sucesso NESTA tentativa pode ser restaurado.
         //
         // O _tempPath só é apagado no caminho de sucesso, então um
@@ -165,10 +184,13 @@ public class Worker : BackgroundService
             await _processService.RunProcessAsync(_gbakPath, new[] { "-b", alvoJunior, preBkp }, GbakTimeout, stoppingToken, credenciaisEnv);
             backupValido = true;
 
-            int scriptsComFalha = await _scriptRunnerService.RunPendingScriptsAsync(_juniorFdbPath, PastaPacotes, _cnpjCliente, stoppingToken);
+            int scriptsComFalha = await _scriptRunnerService.RunPendingScriptsAsync(_juniorFdbPath, PastaPacotes, _cnpjCliente, _sistema, stoppingToken);
 
-            string versaoNova = _databaseService.GetVersaoAtual(_juniorFdbPath);
-            _databaseService.InjetarNovosBinarios(_bexeFdbPath, PastaPacotes, versaoNova);
+            // "versaoAlvo", não uma nova leitura de VERSAO_NOVA: o valor não muda durante o
+            // processamento (só GetVersaoConfirmada/VERSAO_ATUAL avança, e só depois do sucesso
+            // completo, em ConfirmarVersaoAtual abaixo) -- reler seria uma consulta a mais no banco
+            // pra buscar exatamente o mesmo valor já lido antes do shutdown.
+            _databaseService.InjetarNovosBinarios(_bexeFdbPath, PastaPacotes, versaoAlvo);
             await _processService.RunProcessAsync(_gfixPath, new[] { "-online", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
 
             // Backup pós-atualização depois do "-online", não antes: nada lê o JUNIOR_POS.fbk
@@ -191,7 +213,7 @@ public class Worker : BackgroundService
                 ? $"Atualização concluída com {scriptsComFalha} script(s) pulado(s) por erro -- ver detalhes nos retornos individuais."
                 : "Atualização concluída com sucesso.";
             _databaseService.SetStatusAtualizacao(_juniorFdbPath, "CONCLUIDO", null, scriptsComFalha > 0 ? mensagemFinal : null);
-            await _apiService.SendLog(_cnpjCliente, "SUCESSO", mensagemFinal);
+            await _apiService.SendLog(_cnpjCliente, _sistema, "SUCESSO", mensagemFinal, versaoAlvo, versaoAnterior, cronometro.Elapsed);
             if (Directory.Exists(_tempPath)) Directory.Delete(_tempPath, true);
             _falhasConsecutivas = 0;
         }
@@ -219,7 +241,10 @@ public class Worker : BackgroundService
             // Sem revert de versão pra fazer aqui: VERSAO_ATUAL só é avançada em
             // ConfirmarVersaoAtual, no caminho de sucesso -- se caiu aqui, ela nunca mudou.
             _databaseService.SetStatusAtualizacao(_juniorFdbPath, "ERRO", null, ex.Message);
-            await _apiService.SendLog(_cnpjCliente, "ERRO", ex.Message);
+            // "versaoAlvo" aqui é a versão que esta tentativa buscava e NÃO alcançou (o rollback
+            // acima já devolveu o banco pro estado de "versaoAnterior") -- é o que o painel precisa
+            // pra mostrar "tentou ir pra 2026.09.01, falhou, continua na 2026.08.27".
+            await _apiService.SendLog(_cnpjCliente, _sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed);
             _falhasConsecutivas++;
         }
     }

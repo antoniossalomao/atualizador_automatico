@@ -28,9 +28,19 @@ public class ApiService
     // "a checagem quebrou". O catch em Worker.ExecuteAsync já loga a exceção real e incrementa
     // _falhasConsecutivas -- antes disso, uma API fora do ar era indistinguível de um ciclo são,
     // e o cliente ficava invisível sem log local nem backoff.
-    public async Task<UpdateResponse?> CheckForUpdates(string cnpj, string versaoAtual)
+    //
+    // "sistema" é obrigatório desde que o servidor passou a manter uma versão publicada POR
+    // SISTEMA em vez de uma só global (ver web/docs/REVISAO_INTERFACE.md, seção "Contrato do
+    // agente"). Antes, sem esse parâmetro, o servidor respondia com a última versão publicada de
+    // QUALQUER sistema -- um agente cuidando do B_Vendas podia acabar recebendo o pacote do B_NFe.
+    // Um agente que cuida de vários sistemas faz uma chamada por sistema.
+    public async Task<UpdateResponse?> CheckForUpdates(string cnpj, string sistema, string versaoAtual)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(cnpj)}?versao={Uri.EscapeDataString(versaoAtual)}");
+        if (string.IsNullOrWhiteSpace(sistema))
+            throw new InvalidOperationException("Defina ATUALIZADOR_SISTEMA antes de consultar atualizações.");
+
+        string query = $"sistema={Uri.EscapeDataString(sistema)}&versao={Uri.EscapeDataString(versaoAtual)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(cnpj)}?{query}");
         request.Headers.Add("X-Agent-Token", _agentToken);
         var response = await _httpClient.SendAsync(request);
         response.EnsureSuccessStatusCode();
@@ -76,11 +86,39 @@ public class ApiService
         await response.Content.CopyToAsync(fs, cancellationToken);
     }
 
-    public async Task SendLog(string cnpj, string status, string detalhes)
+    // Nome da máquina lido uma vez só (não muda durante a vida do processo) -- é o que o painel
+    // de Distribuição mostra ao lado da empresa (ex.: "Padaria Central · CAIXA-01"), útil quando o
+    // mesmo CNPJ tem várias estações rodando o agente.
+    private static readonly string _nomeMaquina = Environment.MachineName;
+
+    /// <summary>
+    /// Reporta o resultado de uma execução à API central. "Fire and forget": uma falha aqui
+    /// (rede fora, API fora do ar) não pode derrubar o ciclo de atualização que já rodou -- o
+    /// agente já fez seu trabalho local (ScriptRunnerService.RunPendingScriptsAsync já tentou
+    /// registrar o script) independente de o painel ficar sabendo na hora.
+    ///
+    /// <paramref name="sistema"/> identifica de qual sistema é este retorno -- sem ele, o painel
+    /// de Distribuição não consegue comparar "versão instalada" contra "versão publicada" (ver
+    /// VersaoService.painel() no servidor), e o agente aparece como "em andamento" para sempre.
+    /// <paramref name="versao"/>/<paramref name="versaoAnterior"/>/<paramref name="duracao"/> são
+    /// opcionais -- ficam nulos nos logs de falha de script individual (ScriptRunnerService), que
+    /// reportam um problema no MEIO do processo, não a transição de versão completa.
+    /// </summary>
+    public async Task SendLog(string cnpj, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null)
     {
         try
         {
-            var payload = new { cnpj, status, detalhes };
+            var payload = new
+            {
+                cnpj,
+                sistema,
+                status,
+                detalhes,
+                versao = versao ?? "",
+                versaoAnterior = versaoAnterior ?? "",
+                duracaoMs = duracao.HasValue ? (long?)Math.Round(duracao.Value.TotalMilliseconds) : null,
+                maquina = _nomeMaquina,
+            };
             var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/update/log") { Content = content };
             request.Headers.Add("X-Agent-Token", _agentToken);
@@ -94,10 +132,16 @@ public class UpdateResponse
 {
     [JsonPropertyName("update_available")]
     public bool HasUpdate { get; set; }
+    // "Sistema" e "Notes" batem com "sistema"/"notes" do JSON por comparação sem diferenciar
+    // maiúsculas (PropertyNameCaseInsensitive, configurado no Deserialize acima) -- não precisam
+    // de [JsonPropertyName] explícito, diferente de "update_available"/"script_url", que têm
+    // sublinhado no JSON e não batem com o PascalCase do C# nem ignorando maiúsculas.
+    public string Sistema { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
     public List<PackageInfo> Packages { get; set; } = new();
     [JsonPropertyName("script_url")]
     public string? ScriptUrl { get; set; }
+    public string? Notes { get; set; }
 }
 
 public class PackageInfo
