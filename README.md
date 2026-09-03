@@ -95,7 +95,12 @@ mensagem em `MENSAGEM_LOG` e reverte `VERSAO_NOVA` para a versão anterior.
 
 ## Requisitos
 
-- **.NET 8 SDK** (para compilar) ou Runtime (para rodar)
+- **.NET 8 SDK** na máquina que compila — só isso. O executável é publicado
+  como *self-contained + single-file* (ver "Compilar e publicar" abaixo): o
+  runtime do .NET inteiro, mais todas as DLLs de dependência (driver do
+  Firebird, `Microsoft.Extensions.*`), ficam embutidos dentro do próprio
+  `AtualizadorERP.exe` — o servidor do cliente **não precisa** ter .NET
+  instalado, nem sobra DLL solta ao lado do executável.
 - **Firebird 2.5** instalado no servidor do cliente, com `gfix.exe`, `gbak.exe`
   e `isql.exe`
 - **`7za.exe`** ao lado do executável. O pacote gerado pelo CI
@@ -165,17 +170,33 @@ atualização — o servidor recusa a chamada (ver
 
 ## Compilar e publicar
 
+O jeito oficial de publicar — o mesmo que
+[.github/workflows/build.yml](.github/workflows/build.yml) usa a cada push —
+é *self-contained + single-file*:
+
 ```bash
 dotnet build AtualizadorERP.csproj
-dotnet publish AtualizadorERP.csproj -c Release -r win-x64 --self-contained false -o publicado
+dotnet publish AtualizadorERP.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./Atualizador
 ```
 
-`dotnet publish` já copia `atualizador.ini.example` pra dentro de `publicado/`
-sozinho (configurado no `.csproj`). Copie o `7za.exe` pra dentro de
-`publicado/` também (ver "Requisitos" acima — o pacote do CI já vem com isso),
-copie a pasta inteira pra dentro de `Atualizador\` na pasta do cliente (ver
-"Onde o agente mora"), renomeie `atualizador.ini.example` pra `atualizador.ini`
-e preencha, e registre o serviço:
+Isso produz só 3 arquivos em `Atualizador/`: `AtualizadorERP.exe` (~70 MB, com
+tudo embutido), `AtualizadorERP.pdb` e `atualizador.ini.example` (copiado
+sozinho, configurado no `.csproj`). Copie o `7za.exe` pra dentro também (ver
+"Requisitos" acima — **o pacote baixado do CI já vem com isso**, não precisa
+desse passo manual se usar o artefato do GitHub Actions em vez de compilar
+localmente).
+
+> Publicando localmente mais de uma vez **na mesma pasta de saída**, sem
+> limpar `bin/`/`obj/` entre uma e outra: já reproduzido um caso em que o
+> `atualizador.ini.example` some sozinho na segunda publicação (limpeza
+> incremental do MSBuild tratando o arquivo como "saída obsoleta" por engano).
+> Não afeta o pacote do CI (cada run começa de um checkout limpo, uma
+> publicação só) — só apague `bin/`, `obj/` e a pasta de saída antes de
+> publicar de novo localmente se for testar isso na mão.
+
+Copie a pasta `Atualizador/` inteira pra dentro da pasta do cliente (ver "Onde
+o agente mora"), renomeie `atualizador.ini.example` pra `atualizador.ini` e
+preencha, e registre o serviço:
 
 ```powershell
 sc.exe create "AgenteAtualizadorERP" binPath= "C:\caminho\ate\Bredas\Atualizador\AtualizadorERP.exe" start= auto
