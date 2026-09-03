@@ -35,6 +35,7 @@ public class Worker : BackgroundService
     private static readonly TimeSpan GbakTimeout = TimeSpan.FromMinutes(15);
 
     private int _falhasConsecutivas = 0;
+    private bool _schemaJuniorGarantido = false;
 
     public Worker(ILogger<Worker> logger, ApiService apiService, DatabaseService databaseService, ExtractionService extractionService, ProcessService processService, ScriptRunnerService scriptRunnerService)
     {
@@ -52,6 +53,16 @@ public class Worker : BackgroundService
         {
             try
             {
+                // Fica dentro do try/catch de propósito: se o JUNIOR.fdb não estiver acessível
+                // ainda no arranque do serviço, isso deve entrar no mesmo backoff de qualquer
+                // outra falha do ciclo, não derrubar o Worker. Só marca "garantido" depois de um
+                // sucesso de verdade, então uma falha aqui tenta de novo no próximo ciclo.
+                if (!_schemaJuniorGarantido)
+                {
+                    _databaseService.GarantirTabelaSysAtualizacao(_juniorFdbPath);
+                    _schemaJuniorGarantido = true;
+                }
+
                 var statusAtual = _databaseService.GetStatusAtualizacao(_juniorFdbPath);
                 if (statusAtual == "CONCLUIDO" || statusAtual == "ERRO")
                 {

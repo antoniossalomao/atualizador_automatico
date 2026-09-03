@@ -26,19 +26,32 @@ public sealed class FirebirdTestDatabase : IDisposable
     }
 
     /// <summary>Schema mínimo assumido de um JUNIOR.fdb -- ver RISCOS-CONHECIDOS.md ("Schema do
-    /// JUNIOR.fdb -- parcialmente confirmado"): SYS_ATUALIZACAO não foi confirmada contra um
-    /// banco real, SCRIPTS foi.</summary>
+    /// JUNIOR.fdb -- parcialmente confirmado"): SYS_ATUALIZACAO não existe no schema real (o
+    /// próprio agente cria via DatabaseService.GarantirTabelaSysAtualizacao -- ver
+    /// CriarJuniorSemSysAtualizacao para testar esse caminho), SCRIPTS foi confirmada.</summary>
     public static FirebirdTestDatabase CriarJunior(string status = "AUTORIZADO", string versaoAtual = "1.0.0", string versaoNova = "1.0.0")
     {
-        var db = Criar();
+        var db = CriarJuniorSemSysAtualizacao();
         db.ExecutarNaoConsulta(@"
             CREATE TABLE SYS_ATUALIZACAO (
                 ID INTEGER NOT NULL PRIMARY KEY,
                 STATUS VARCHAR(20),
-                VERSAO_NOVA VARCHAR(20),
-                VERSAO_ATUAL VARCHAR(20),
+                VERSAO_NOVA VARCHAR(50),
+                VERSAO_ATUAL VARCHAR(50),
                 MENSAGEM_LOG VARCHAR(500)
             )");
+        db.ExecutarNaoConsulta(
+            "INSERT INTO SYS_ATUALIZACAO (ID, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (1, @status, @versaoNova, @versaoAtual)",
+            ("@status", status), ("@versaoNova", versaoNova), ("@versaoAtual", versaoAtual));
+        return db;
+    }
+
+    /// <summary>Reproduz um JUNIOR.fdb real antes da primeira execução do agente: SCRIPTS existe
+    /// (o BScript.exe já a mantinha), SYS_ATUALIZACAO ainda não -- é o cenário que
+    /// DatabaseService.GarantirTabelaSysAtualizacao precisa cobrir.</summary>
+    public static FirebirdTestDatabase CriarJuniorSemSysAtualizacao()
+    {
+        var db = Criar();
         db.ExecutarNaoConsulta("CREATE GENERATOR SEQUENCIA_SCRIPTS");
         db.ExecutarNaoConsulta(@"
             CREATE TABLE SCRIPTS (
@@ -47,15 +60,15 @@ public sealed class FirebirdTestDatabase : IDisposable
                 TIPO_EXECUCAO VARCHAR(10),
                 DATA_EXECUCAO TIMESTAMP
             )");
-        db.ExecutarNaoConsulta(
-            "INSERT INTO SYS_ATUALIZACAO (ID, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (1, @status, @versaoNova, @versaoAtual)",
-            ("@status", status), ("@versaoNova", versaoNova), ("@versaoAtual", versaoAtual));
         return db;
     }
 
     /// <summary>Schema do EXECUTAVEIS confirmado por engenharia reversa de um BEXE.fdb real (ver
-    /// item 14 do RISCOS-CONHECIDOS.md): VERSAOATUALIZADA é VARCHAR(20) declarado, mas em UTF8 só
-    /// cabem 5 caracteres reais -- reproduzido aqui com o mesmo charset, não um VARCHAR comum.</summary>
+    /// item 14 do RISCOS-CONHECIDOS.md): VERSAOATUALIZADA é UTF8 e só cabem 5 caracteres reais --
+    /// declarada como VARCHAR(5) CHARACTER SET UTF8, não VARCHAR(20) (confirmado ao vivo contra o
+    /// Firebird 2.5 desta máquina: "VARCHAR(n) CHARACTER SET UTF8" trata n como número de
+    /// caracteres, então só VARCHAR(5) reproduz o limite real de 5 caracteres encontrado em
+    /// produção -- RDB$FIELD_LENGTH bate em 20 bytes, RDB$CHARACTER_LENGTH em 5).</summary>
     public static FirebirdTestDatabase CriarBexe()
     {
         var db = Criar();
@@ -66,7 +79,7 @@ public sealed class FirebirdTestDatabase : IDisposable
                 EXECUTAVEL BLOB,
                 HASHEXE VARCHAR(64),
                 VERSAO VARCHAR(20),
-                VERSAOATUALIZADA VARCHAR(20) CHARACTER SET UTF8,
+                VERSAOATUALIZADA VARCHAR(5) CHARACTER SET UTF8,
                 DATA_ATUALIZACAO TIMESTAMP
             )");
         return db;

@@ -214,15 +214,23 @@ conexão 2 (mesmo processo, depois do shutdown) falha. **Correção:**
 fecha sua própria conexão por chamada, pooling nunca trouxe benefício aqui, só
 esse risco durante a janela crítica da Fase 3.
 
-### 14. `VERSAOATUALIZADA` do `BEXE.fdb` real só cabe 5 caracteres, não 20
+### 14. `VERSAOATUALIZADA` do `BEXE.fdb` real só cabe 5 caracteres, não 20 — ✅ resolvido em 01/09/2026
 `RDB$FIELD_LENGTH` da coluna é 20, mas o *charset* é UTF8 — `RDB$CHARACTER_LENGTH`
 real é **5**. O formato de versão que o painel usa hoje (`2026.08.27`, 10
 caracteres) nunca coube; `InjetarNovosBinarios` estourava
 `"string right truncation"`, um erro Firebird genérico sem dizer qual coluna.
-**Correção parcial:** `InjetarNovosBinarios` agora valida o tamanho antes e lança
-um erro específico e acionável. **Não resolvido:** a incompatibilidade em si —
-ou o painel adota uma convenção de versão de até 5 caracteres, ou o schema desse
-`BEXE.fdb` precisa mudar. Decisão de produto, não só de código.
+
+**Correção:** `DatabaseService.GarantirColunaVersaoAtualizada` roda antes de toda
+injeção de binários (`InjetarNovosBinarios`) e amplia a coluna sozinha, via
+`ALTER TABLE EXECUTAVEIS ALTER COLUMN VERSAOATUALIZADA TYPE VARCHAR(20)`, se
+`RDB$CHARACTER_LENGTH` ainda estiver abaixo de 20 — idempotente, então rodar de
+novo num `BEXE.fdb` já ampliado é um no-op. Confirmado ao vivo contra o Firebird
+2.5 real desta máquina, fora dos testes automatizados: `ALTER COLUMN ... TYPE
+VARCHAR(n)` preserva o charset da coluna e trata `n` como número de caracteres
+(não bytes) — ampliar para `VARCHAR(20)` dá 20 caracteres reais de verdade, não
+mais um número decorativo. A checagem de tamanho em `InjetarNovosBinarios`
+continua como rede de segurança, só que agora com o limite de 20 (o mesmo que a
+coluna declara depois de ampliada) em vez do hardcoded 5.
 
 ---
 
@@ -266,16 +274,30 @@ um download funciona.
 
 ---
 
-## ⚪ Pendências de ambiente (não corrigíveis só com código)
+## ✅ Item resolvido em 01/09/2026: `SYS_ATUALIZACAO` ausente no `JUNIOR.fdb` real
 
-- **Schema do `JUNIOR.fdb` — parcialmente confirmado, 31/08/2026.** Uma cópia real
-  chegou (366 tabelas). Ela **não tem** `SYS_ATUALIZACAO` — a tabela inteira ainda
-  é assumida (`STATUS`, `VERSAO_NOVA`, `MENSAGEM_LOG`, e agora `VERSAO_ATUAL`
-  também, adicionada por este projeto). Ela **tem** `SCRIPTS`, confirmada
-  (`ID`, `NOME_ARQUIVO`, `TIPO_EXECUCAO`, `DATA_EXECUCAO`, gerador
-  `SEQUENCIA_SCRIPTS`) — ver item 1. O `BEXE.fdb` também foi confirmado com um
-  arquivo real (tabela `EXECUTAVEIS`) — ver item 14 sobre o limite de
-  `VERSAOATUALIZADA`.
+A cópia real de produção inspecionada (366 tabelas) **não tem** `SYS_ATUALIZACAO`
+— a tabela inteira (`STATUS`, `VERSAO_NOVA`, `VERSAO_ATUAL`, `MENSAGEM_LOG`) era
+só assumida por este projeto, sem nenhuma garantia de que existiria num cliente
+novo antes da primeira instalação do agente.
+
+**Correção:** `DatabaseService.GarantirTabelaSysAtualizacao`, chamada uma vez no
+arranque do `Worker` (dentro do mesmo try/catch do ciclo, então uma falha de
+conexão no boot entra no backoff normal em vez de derrubar o serviço), checa
+`RDB$RELATIONS` e cria a tabela — com `VERSAO_NOVA`/`VERSAO_ATUAL` em
+`VARCHAR(50)`, não 20: como é este projeto que cria a tabela do zero, não há
+schema legado a respeitar, então vale deixar folga acima dos 20 caracteres reais
+que `EXECUTAVEIS.VERSAOATUALIZADA` aceita (item 14) em vez de criar um segundo
+limite apertado — mais a linha `ID = 1` inicial em `CONCLUIDO`. Idempotente: num
+cliente que já tiver a tabela (ou na segunda execução em qualquer cliente), é um
+no-op. `SCRIPTS` continua confirmada contra o banco real (`ID`, `NOME_ARQUIVO`,
+`TIPO_EXECUCAO`, `DATA_EXECUCAO`, gerador `SEQUENCIA_SCRIPTS`) — ver item 1. O
+`BEXE.fdb` também foi confirmado com um arquivo real (tabela `EXECUTAVEIS`) — ver
+item 14.
+
+---
+
+## ⚪ Pendências de ambiente (não corrigíveis só com código)
 - **Fase 2 (Delphi) não existe.** Não há nenhum `.pas`/`.dpr`. Ler `PENDENTE`,
   perguntar ao usuário e gravar `AUTORIZADO` ainda precisa ser escrito no ERP. Nos
   testes de 31/08/2026 isso foi simulado gravando `AUTORIZADO` direto no banco.

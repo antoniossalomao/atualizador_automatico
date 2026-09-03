@@ -129,24 +129,99 @@ public class DatabaseServiceTests
     }
 
     [Fact]
-    public void InjetarNovosBinarios_lanca_se_versao_estoura_o_limite_real_de_5_caracteres()
+    public void InjetarNovosBinarios_amplia_coluna_automaticamente_e_aceita_o_formato_do_painel()
     {
-        // Reproduz o achado do item 14: VERSAOATUALIZADA é VARCHAR(20) só no nome -- em UTF8 só
-        // cabem 5 caracteres de verdade. O formato do painel ("2026.08.27", 10 chars) nunca coube.
+        // Reproduz o achado do item 14 (VERSAOATUALIZADA só cabia 5 caracteres reais em UTF8) e
+        // confirma a correção: em vez de lançar pro formato do painel ("2026.08.27", 10 chars),
+        // InjetarNovosBinarios agora amplia a coluna sozinho (GarantirColunaVersaoAtualizada) antes
+        // de validar.
         using var bexe = FirebirdTestDatabase.CriarBexe();
         string pasta = Directory.CreateTempSubdirectory().FullName;
         try
         {
             File.WriteAllBytes(Path.Combine(pasta, "produto.exe"), new byte[] { 1, 2, 3 });
 
+            _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, "2026.08.27");
+
+            Assert.Equal("2026.08.27", bexe.ExecutarEscalar("SELECT VERSAOATUALIZADA FROM EXECUTAVEIS WHERE NOMEARQUIVO = 'produto.exe'"));
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
+    public void InjetarNovosBinarios_ainda_lanca_para_versao_maior_que_o_novo_limite()
+    {
+        using var bexe = FirebirdTestDatabase.CriarBexe();
+        string pasta = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pasta, "produto.exe"), new byte[] { 1, 2, 3 });
+            string versaoGigante = new string('9', 21);
+
             var ex = Assert.Throws<InvalidOperationException>(() =>
-                _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, "2026.08.27"));
+                _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, versaoGigante));
             Assert.Contains("VERSAOATUALIZADA", ex.Message);
         }
         finally
         {
             Directory.Delete(pasta, true);
         }
+    }
+
+    [Fact]
+    public void GarantirColunaVersaoAtualizada_amplia_coluna_que_so_cabia_5_caracteres_reais()
+    {
+        using var bexe = FirebirdTestDatabase.CriarBexe();
+
+        _databaseService.GarantirColunaVersaoAtualizada(bexe.CaminhoArquivo);
+
+        int caracteres = Convert.ToInt32(bexe.ExecutarEscalar(@"
+            SELECT F.RDB$CHARACTER_LENGTH
+            FROM RDB$RELATION_FIELDS RF
+            JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
+            WHERE RF.RDB$RELATION_NAME = 'EXECUTAVEIS' AND RF.RDB$FIELD_NAME = 'VERSAOATUALIZADA'"));
+        Assert.Equal(20, caracteres);
+    }
+
+    [Fact]
+    public void GarantirColunaVersaoAtualizada_e_idempotente()
+    {
+        using var bexe = FirebirdTestDatabase.CriarBexe();
+
+        _databaseService.GarantirColunaVersaoAtualizada(bexe.CaminhoArquivo);
+        _databaseService.GarantirColunaVersaoAtualizada(bexe.CaminhoArquivo);
+
+        int caracteres = Convert.ToInt32(bexe.ExecutarEscalar(@"
+            SELECT F.RDB$CHARACTER_LENGTH
+            FROM RDB$RELATION_FIELDS RF
+            JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
+            WHERE RF.RDB$RELATION_NAME = 'EXECUTAVEIS' AND RF.RDB$FIELD_NAME = 'VERSAOATUALIZADA'"));
+        Assert.Equal(20, caracteres);
+    }
+
+    [Fact]
+    public void GarantirTabelaSysAtualizacao_cria_a_tabela_e_a_linha_inicial_se_nao_existir()
+    {
+        using var junior = FirebirdTestDatabase.CriarJuniorSemSysAtualizacao();
+
+        _databaseService.GarantirTabelaSysAtualizacao(junior.CaminhoArquivo);
+
+        Assert.Equal("CONCLUIDO", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
+        Assert.Equal("0.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
+    }
+
+    [Fact]
+    public void GarantirTabelaSysAtualizacao_e_idempotente_e_nao_mexe_em_dado_existente()
+    {
+        using var junior = FirebirdTestDatabase.CriarJunior(status: "PENDENTE", versaoAtual: "3.0.0", versaoNova: "4.0.0");
+
+        _databaseService.GarantirTabelaSysAtualizacao(junior.CaminhoArquivo);
+
+        Assert.Equal("PENDENTE", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
+        Assert.Equal("3.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
     }
 
     [Fact]

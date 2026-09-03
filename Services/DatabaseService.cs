@@ -30,6 +30,45 @@ public class DatabaseService
         return $"User={user};Password={password};Database={dbPath};DataSource=localhost;Port={port};Dialect=3;Charset=ISO8859_1;Pooling=false;";
     }
 
+    /// <summary>
+    /// Cria a tabela SYS_ATUALIZACAO em JUNIOR.fdb se ela ainda não existir. Confirmado contra uma
+    /// cópia real de produção (366 tabelas) que o schema não a tem -- ver RISCOS-CONHECIDOS.md,
+    /// "Schema do JUNIOR.fdb". Em vez de depender de um DBA rodar essa DDL manualmente em cada
+    /// cliente antes da primeira instalação do agente, o próprio Worker garante o schema no
+    /// arranque: idempotente (checa RDB$RELATIONS antes de criar), então rodar de novo num cliente
+    /// que já tem a tabela é um no-op. A linha ID=1 inicial nasce em CONCLUIDO -- mesmo estado que
+    /// GetStatusAtualizacao já assume como padrão quando a tabela nem existia.
+    /// </summary>
+    public void GarantirTabelaSysAtualizacao(string dbPath)
+    {
+        if (ExisteRegistroSistema(dbPath, "RDB$RELATIONS", "RDB$RELATION_NAME", "SYS_ATUALIZACAO")) return;
+
+        using var conn = new FbConnection(GetConnectionString(dbPath));
+        conn.Open();
+
+        // VERSAO_NOVA/VERSAO_ATUAL em VARCHAR(50), não 20: essa tabela não existe na base real (é
+        // este projeto que a cria, ver RISCOS-CONHECIDOS.md), então não há schema legado a
+        // respeitar aqui -- só sobra margem confortável acima dos 20 caracteres reais que
+        // EXECUTAVEIS.VERSAOATUALIZADA aceita (ver GarantirColunaVersaoAtualizada), em vez de criar
+        // um segundo limite apertado para versões um pouco mais longas no futuro.
+        using (var cmdCreate = new FbCommand(@"
+            CREATE TABLE SYS_ATUALIZACAO (
+                ID INTEGER NOT NULL PRIMARY KEY,
+                STATUS VARCHAR(20),
+                VERSAO_NOVA VARCHAR(50),
+                VERSAO_ATUAL VARCHAR(50),
+                MENSAGEM_LOG VARCHAR(500)
+            )", conn))
+        {
+            cmdCreate.ExecuteNonQuery();
+        }
+
+        using var cmdInsert = new FbCommand(
+            "INSERT INTO SYS_ATUALIZACAO (ID, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (1, 'CONCLUIDO', '0.0.0', '0.0.0')",
+            conn);
+        cmdInsert.ExecuteNonQuery();
+    }
+
     public string GetStatusAtualizacao(string dbPath)
     {
         using var conn = new FbConnection(GetConnectionString(dbPath));
@@ -226,6 +265,38 @@ public class DatabaseService
     /// -- evita terminais lendo uma mistura de binários antigos e novos se um arquivo no meio
     /// do lote falhar.
     /// </summary>
+    /// <summary>
+    /// Amplia EXECUTAVEIS.VERSAOATUALIZADA para caber pelo menos <paramref name="caracteresMinimos"/>
+    /// caracteres reais, se ainda não couber. Achado do item 14 do RISCOS-CONHECIDOS.md: a coluna é
+    /// UTF8 e no schema real de um BEXE.fdb de produção só cabiam 5 caracteres de verdade (apesar do
+    /// nome "VARCHAR(20)" sugerir mais), estourando "string right truncation" pro formato de versão
+    /// do painel ("2026.08.27", 10 caracteres). Confirmado contra Firebird 2.5 real que
+    /// "ALTER COLUMN ... TYPE VARCHAR(n)" preserva o charset da coluna e trata n como número de
+    /// caracteres (não bytes) -- então isso amplia de verdade, não só troca um número decorativo.
+    /// Idempotente: só faz a consulta e sai se a coluna já for grande o bastante.
+    /// </summary>
+    public void GarantirColunaVersaoAtualizada(string bexeDbPath, int caracteresMinimos = 20)
+    {
+        using var conn = new FbConnection(GetConnectionString(bexeDbPath));
+        conn.Open();
+
+        int atual;
+        using (var cmdConsulta = new FbCommand(@"
+            SELECT F.RDB$CHARACTER_LENGTH
+            FROM RDB$RELATION_FIELDS RF
+            JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
+            WHERE RF.RDB$RELATION_NAME = 'EXECUTAVEIS' AND RF.RDB$FIELD_NAME = 'VERSAOATUALIZADA'", conn))
+        {
+            var resultado = cmdConsulta.ExecuteScalar();
+            atual = resultado == null ? 0 : Convert.ToInt32(resultado);
+        }
+
+        if (atual >= caracteresMinimos) return;
+
+        using var cmdAlter = new FbCommand($"ALTER TABLE EXECUTAVEIS ALTER COLUMN VERSAOATUALIZADA TYPE VARCHAR({caracteresMinimos})", conn);
+        cmdAlter.ExecuteNonQuery();
+    }
+
     public void InjetarNovosBinarios(string bexeDbPath, string tempPath, string versaoNova)
     {
         var arquivosExe = Directory.GetFiles(tempPath, "*.exe", SearchOption.AllDirectories);
@@ -237,16 +308,17 @@ public class DatabaseService
         if (arquivosExe.Length == 0)
             throw new InvalidOperationException($"Pacote da versão {versaoNova} não continha nenhum executável (*.exe) para distribuir em {tempPath} -- abortando em vez de marcar como concluído sem ter atualizado nada.");
 
-        // VERSAOATUALIZADA é declarada VARCHAR(20), mas em UTF8 -- RDB$CHARACTER_LENGTH real é só
-        // 5 (confirmado contra um BEXE.fdb real). "2026.08.27" (o formato de versão que o painel
-        // web usa) nunca coube: o INSERT/UPDATE estourava "string right truncation", um erro
-        // Firebird genérico que não deixa claro qual coluna nem por quê. Checar aqui antes convert
-        // isso num erro específico e acionável em vez de deixar o SQL falhar de forma opaca.
-        const int MaxCaracteresVersaoAtualizada = 5;
+        // Amplia a coluna automaticamente antes de checar o limite -- ver GarantirColunaVersaoAtualizada.
+        GarantirColunaVersaoAtualizada(bexeDbPath);
+
+        // Mesmo depois de garantir a ampliação, mantém a checagem: uma versão futura fora do
+        // formato esperado (ou uma ampliação que falhou por falta de permissão DDL) ainda deve
+        // virar um erro específico e acionável, não um "string right truncation" opaco do Firebird.
+        const int MaxCaracteresVersaoAtualizada = 20;
         if (versaoNova.Length > MaxCaracteresVersaoAtualizada)
             throw new InvalidOperationException(
-                $"Versão '{versaoNova}' tem {versaoNova.Length} caracteres, mas EXECUTAVEIS.VERSAOATUALIZADA só cabe {MaxCaracteresVersaoAtualizada} (schema real do BEXE.fdb, coluna UTF8 apesar do nome sugerir 20) -- " +
-                "não dá pra truncar sem risco de duas versões diferentes virarem o mesmo valor pros terminais. Precisa de uma convenção de versão mais curta, ou o schema do BEXE.fdb desse cliente precisa mudar.");
+                $"Versão '{versaoNova}' tem {versaoNova.Length} caracteres, mas EXECUTAVEIS.VERSAOATUALIZADA só cabe {MaxCaracteresVersaoAtualizada} -- " +
+                "não dá pra truncar sem risco de duas versões diferentes virarem o mesmo valor pros terminais. Precisa de uma convenção de versão mais curta, ou aumentar o limite aqui e no schema do BEXE.fdb.");
 
         using var conn = new FbConnection(GetConnectionString(bexeDbPath));
         conn.Open();

@@ -178,5 +178,11 @@ deixaria o cliente inteiro parado até alguém perceber. Ver
 [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md).
 
 O schema real do `BEXE.fdb` (tabela `EXECUTAVEIS`) foi confirmado por engenharia
-reversa de um arquivo de produção. O do `JUNIOR.fdb` (`SYS_ATUALIZACAO`) **não** —
-ver riscos conhecidos.
+reversa de um arquivo de produção. A tabela `SYS_ATUALIZACAO` do `JUNIOR.fdb`
+**não existe** nesse schema real — por isso o próprio agente a cria (e insere a
+linha `ID = 1` inicial) no primeiro ciclo, se ainda não existir
+(`DatabaseService.GarantirTabelaSysAtualizacao`, chamado uma vez no arranque do
+`Worker`). Da mesma forma, `EXECUTAVEIS.VERSAOATUALIZADA` é ampliada
+automaticamente para 20 caracteres reais antes de cada injeção de binários
+(`GarantirColunaVersaoAtualizada`) — ver item 14 de
+[RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md).

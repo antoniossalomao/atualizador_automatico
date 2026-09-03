@@ -32,3 +32,4 @@ versao_anterior.txt
 *.ini
 *.Ini
 *.INI
+*.sql

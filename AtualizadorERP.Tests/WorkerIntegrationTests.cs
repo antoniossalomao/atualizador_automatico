@@ -78,10 +78,12 @@ public class WorkerIntegrationTests
     [Fact]
     public async Task Falha_na_fase_4_reverte_o_banco_via_backup_e_nao_promove_versao()
     {
-        // "2026.08.27" tem 10 caracteres -- estoura o limite real de 5 do VERSAOATUALIZADA (item
-        // 14) só depois que o gfix -shut, o gbak pré e os scripts já rodaram. É o cenário exato pra
-        // testar o rollback: precisa restaurar um banco que já tinha mudado de estado.
-        using var junior = FirebirdTestDatabase.CriarJunior(status: "AUTORIZADO", versaoAtual: "1.0.0", versaoNova: "2026.08.27");
+        // Versão com mais de 20 caracteres -- estoura o limite de EXECUTAVEIS.VERSAOATUALIZADA
+        // mesmo depois de GarantirColunaVersaoAtualizada ampliar a coluna (item 14), e só falha em
+        // InjetarNovosBinarios, ou seja, depois que o gfix -shut, o gbak pré e os scripts já
+        // rodaram. É o cenário exato pra testar o rollback: precisa restaurar um banco que já
+        // tinha mudado de estado.
+        using var junior = FirebirdTestDatabase.CriarJunior(status: "AUTORIZADO", versaoAtual: "1.0.0", versaoNova: "2026.08.27-versao-longa-demais");
         using var bexe = FirebirdTestDatabase.CriarBexe();
         var (tempPath, pastaPacotes) = NovoTempPath();
         try
