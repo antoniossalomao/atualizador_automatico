@@ -9,6 +9,7 @@ IHost host = Host.CreateDefaultBuilder(args)
     })
     .ConfigureServices((hostContext, services) =>
     {
+        services.AddSingleton<ConfiguracaoAgente>();
         services.AddHostedService<Worker>();
         services.AddSingleton<ApiService>();
         services.AddSingleton<DatabaseService>();

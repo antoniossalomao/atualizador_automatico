@@ -21,7 +21,7 @@ public sealed class FirebirdTestDatabase : IDisposable
     private FirebirdTestDatabase(string caminhoArquivo)
     {
         CaminhoArquivo = caminhoArquivo;
-        Porta = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_PORT") ?? "3050";
+        Porta = "3050";
         _connectionString = $"User={Usuario};Password={Senha};Database={caminhoArquivo};DataSource=localhost;Port={Porta};Dialect=3;Charset=ISO8859_1;Pooling=false;";
     }
 
@@ -63,24 +63,25 @@ public sealed class FirebirdTestDatabase : IDisposable
         return db;
     }
 
-    /// <summary>Schema do EXECUTAVEIS confirmado por engenharia reversa de um BEXE.fdb real (ver
-    /// item 14 do RISCOS-CONHECIDOS.md): VERSAOATUALIZADA é UTF8 e só cabem 5 caracteres reais --
-    /// declarada como VARCHAR(5) CHARACTER SET UTF8, não VARCHAR(20) (confirmado ao vivo contra o
-    /// Firebird 2.5 desta máquina: "VARCHAR(n) CHARACTER SET UTF8" trata n como número de
-    /// caracteres, então só VARCHAR(5) reproduz o limite real de 5 caracteres encontrado em
-    /// produção -- RDB$FIELD_LENGTH bate em 20 bytes, RDB$CHARACTER_LENGTH em 5).</summary>
+    /// <summary>Schema do EXECUTAVEIS confirmado campo a campo contra um BEXE.fdb real correto
+    /// ("BEXE_certo.FDB", 03/09/2026): NOMEARQUIVO guarda caminho completo (por isso 300, não 100,
+    /// caracteres), VERSAO guarda a versão embutida no executável (até 60 caracteres reais),
+    /// DATA_ATUALIZACAO é DATE (sem hora), e VERSAOATUALIZADA é um flag texto ("True"/"False") --
+    /// por isso só cabem 5 caracteres reais (RDB$FIELD_LENGTH bate em 20 bytes UTF8,
+    /// RDB$CHARACTER_LENGTH em 5), não uma data de versão como se assumia antes (item 14 do
+    /// RISCOS-CONHECIDOS.md).</summary>
     public static FirebirdTestDatabase CriarBexe()
     {
         var db = Criar();
         db.ExecutarNaoConsulta(@"
             CREATE TABLE EXECUTAVEIS (
                 NOMEPRODUTO VARCHAR(50),
-                NOMEARQUIVO VARCHAR(100) NOT NULL PRIMARY KEY,
+                NOMEARQUIVO VARCHAR(300) NOT NULL PRIMARY KEY,
                 EXECUTAVEL BLOB,
                 HASHEXE VARCHAR(64),
-                VERSAO VARCHAR(20),
+                VERSAO VARCHAR(60),
                 VERSAOATUALIZADA VARCHAR(5) CHARACTER SET UTF8,
-                DATA_ATUALIZACAO TIMESTAMP
+                DATA_ATUALIZACAO DATE
             )");
         return db;
     }

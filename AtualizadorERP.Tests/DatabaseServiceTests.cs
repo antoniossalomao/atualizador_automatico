@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using AtualizadorERP.Services;
 using Xunit;
 
@@ -10,9 +11,7 @@ namespace AtualizadorERP.Tests;
 /// </summary>
 public class DatabaseServiceTests
 {
-    private readonly DatabaseService _databaseService = new();
-
-    public DatabaseServiceTests() => TestAmbiente.Garantir();
+    private readonly DatabaseService _databaseService = new(TestAmbiente.Config);
 
     [Fact]
     public void GetStatusAtualizacao_le_o_status_gravado()
@@ -129,77 +128,33 @@ public class DatabaseServiceTests
     }
 
     [Fact]
-    public void InjetarNovosBinarios_amplia_coluna_automaticamente_e_aceita_o_formato_do_painel()
+    public void InjetarNovosBinarios_grava_no_formato_real_confirmado_contra_BEXE_certo()
     {
-        // Reproduz o achado do item 14 (VERSAOATUALIZADA só cabia 5 caracteres reais em UTF8) e
-        // confirma a correção: em vez de lançar pro formato do painel ("2026.08.27", 10 chars),
-        // InjetarNovosBinarios agora amplia a coluna sozinho (GarantirColunaVersaoAtualizada) antes
-        // de validar.
+        // Formato confirmado campo a campo contra um BEXE.fdb real correto (BEXE_certo.FDB,
+        // 03/09/2026): NOMEARQUIVO é o caminho completo (pasta do BEXE.fdb + nome do arquivo),
+        // HASHEXE é SHA-1 maiúsculo, VERSAOATUALIZADA é sempre o flag "True" (não uma versão), e
+        // VERSAO cai pra versaoNova quando o arquivo (como este .exe fake de teste) não tem
+        // FileVersion embutido.
         using var bexe = FirebirdTestDatabase.CriarBexe();
         string pasta = Directory.CreateTempSubdirectory().FullName;
         try
         {
-            File.WriteAllBytes(Path.Combine(pasta, "produto.exe"), new byte[] { 1, 2, 3 });
+            byte[] conteudo = { 1, 2, 3 };
+            File.WriteAllBytes(Path.Combine(pasta, "produto.exe"), conteudo);
+            string caminhoEsperado = Path.Combine(Path.GetDirectoryName(bexe.CaminhoArquivo)!, "produto.exe");
 
             _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, "2026.08.27");
 
-            Assert.Equal("2026.08.27", bexe.ExecutarEscalar("SELECT VERSAOATUALIZADA FROM EXECUTAVEIS WHERE NOMEARQUIVO = 'produto.exe'"));
+            Assert.Equal(1, bexe.ContarLinhas($"SELECT 1 FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
+            Assert.Equal("True", bexe.ExecutarEscalar($"SELECT VERSAOATUALIZADA FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
+            Assert.Equal("2026.08.27", bexe.ExecutarEscalar($"SELECT VERSAO FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
+            string hashEsperado = Convert.ToHexString(SHA1.HashData(conteudo));
+            Assert.Equal(hashEsperado, bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
         }
         finally
         {
             Directory.Delete(pasta, true);
         }
-    }
-
-    [Fact]
-    public void InjetarNovosBinarios_ainda_lanca_para_versao_maior_que_o_novo_limite()
-    {
-        using var bexe = FirebirdTestDatabase.CriarBexe();
-        string pasta = Directory.CreateTempSubdirectory().FullName;
-        try
-        {
-            File.WriteAllBytes(Path.Combine(pasta, "produto.exe"), new byte[] { 1, 2, 3 });
-            string versaoGigante = new string('9', 21);
-
-            var ex = Assert.Throws<InvalidOperationException>(() =>
-                _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, versaoGigante));
-            Assert.Contains("VERSAOATUALIZADA", ex.Message);
-        }
-        finally
-        {
-            Directory.Delete(pasta, true);
-        }
-    }
-
-    [Fact]
-    public void GarantirColunaVersaoAtualizada_amplia_coluna_que_so_cabia_5_caracteres_reais()
-    {
-        using var bexe = FirebirdTestDatabase.CriarBexe();
-
-        _databaseService.GarantirColunaVersaoAtualizada(bexe.CaminhoArquivo);
-
-        int caracteres = Convert.ToInt32(bexe.ExecutarEscalar(@"
-            SELECT F.RDB$CHARACTER_LENGTH
-            FROM RDB$RELATION_FIELDS RF
-            JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
-            WHERE RF.RDB$RELATION_NAME = 'EXECUTAVEIS' AND RF.RDB$FIELD_NAME = 'VERSAOATUALIZADA'"));
-        Assert.Equal(20, caracteres);
-    }
-
-    [Fact]
-    public void GarantirColunaVersaoAtualizada_e_idempotente()
-    {
-        using var bexe = FirebirdTestDatabase.CriarBexe();
-
-        _databaseService.GarantirColunaVersaoAtualizada(bexe.CaminhoArquivo);
-        _databaseService.GarantirColunaVersaoAtualizada(bexe.CaminhoArquivo);
-
-        int caracteres = Convert.ToInt32(bexe.ExecutarEscalar(@"
-            SELECT F.RDB$CHARACTER_LENGTH
-            FROM RDB$RELATION_FIELDS RF
-            JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
-            WHERE RF.RDB$RELATION_NAME = 'EXECUTAVEIS' AND RF.RDB$FIELD_NAME = 'VERSAOATUALIZADA'"));
-        Assert.Equal(20, caracteres);
     }
 
     [Fact]
@@ -232,19 +187,20 @@ public class DatabaseServiceTests
         try
         {
             string caminhoExe = Path.Combine(pasta, "produto.exe");
+            string caminhoEsperado = Path.Combine(Path.GetDirectoryName(bexe.CaminhoArquivo)!, "produto.exe");
             File.WriteAllBytes(caminhoExe, new byte[] { 1, 2, 3, 4 });
 
             _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, "9.9.9");
-            Assert.Equal(1, bexe.ContarLinhas("SELECT 1 FROM EXECUTAVEIS WHERE NOMEARQUIVO = 'produto.exe'"));
-            string hash1 = (string)bexe.ExecutarEscalar("SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = 'produto.exe'")!;
+            Assert.Equal(1, bexe.ContarLinhas($"SELECT 1 FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
+            string hash1 = (string)bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'")!;
 
             File.WriteAllBytes(caminhoExe, new byte[] { 9, 9, 9, 9, 9 });
             _databaseService.InjetarNovosBinarios(bexe.CaminhoArquivo, pasta, "9.9.9");
 
             // Continua uma linha só (UPDATE, não INSERT duplicado) e o hash mudou junto com o
             // conteúdo do arquivo.
-            Assert.Equal(1, bexe.ContarLinhas("SELECT 1 FROM EXECUTAVEIS WHERE NOMEARQUIVO = 'produto.exe'"));
-            string hash2 = (string)bexe.ExecutarEscalar("SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = 'produto.exe'")!;
+            Assert.Equal(1, bexe.ContarLinhas($"SELECT 1 FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
+            string hash2 = (string)bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'")!;
             Assert.NotEqual(hash1, hash2);
         }
         finally

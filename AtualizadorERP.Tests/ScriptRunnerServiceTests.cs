@@ -15,11 +15,10 @@ public class ScriptRunnerServiceTests
 
     public ScriptRunnerServiceTests()
     {
-        TestAmbiente.Garantir();
-        var databaseService = new DatabaseService();
+        var databaseService = new DatabaseService(TestAmbiente.Config);
         var processService = new ProcessService(NullLogger<ProcessService>.Instance);
-        var apiService = new ApiService();
-        _scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService);
+        var apiService = new ApiService(TestAmbiente.Config);
+        _scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService, TestAmbiente.Config);
     }
 
     private static string NovaPastaPacotes()
@@ -39,8 +38,8 @@ public class ScriptRunnerServiceTests
             int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
-            Assert.Contains("Cria_tabela_x.sql", new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo));
-            var verificacao = new DatabaseService().VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_X (ID INTEGER);");
+            Assert.Contains("Cria_tabela_x.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
+            var verificacao = new DatabaseService(TestAmbiente.Config).VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_X (ID INTEGER);");
             Assert.True(verificacao.JaExiste);
         }
         finally
@@ -87,7 +86,7 @@ public class ScriptRunnerServiceTests
             int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
-            Assert.Contains("Cria_tabela_legada.sql", new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo));
+            Assert.Contains("Cria_tabela_legada.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
         }
         finally
         {
@@ -108,7 +107,7 @@ public class ScriptRunnerServiceTests
             int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(1, falhas);
-            var aplicados = new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo);
+            var aplicados = new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo);
             Assert.DoesNotContain("01_quebrado.sql", aplicados);
             Assert.Contains("02_valido.sql", aplicados);
         }
@@ -135,11 +134,11 @@ public class ScriptRunnerServiceTests
             int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
-            var aplicados = new DatabaseService().GetScriptsAplicados(junior.CaminhoArquivo);
+            var aplicados = new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo);
             Assert.Contains(Path.Combine("scripts2012", "Cria_campo_x.sql"), aplicados);
             Assert.Contains(Path.Combine("scripts2016", "Cria_campo_x.sql"), aplicados);
-            Assert.True(new DatabaseService().VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2012 (ID INTEGER)").JaExiste);
-            Assert.True(new DatabaseService().VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2016 (ID INTEGER)").JaExiste);
+            Assert.True(new DatabaseService(TestAmbiente.Config).VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2012 (ID INTEGER)").JaExiste);
+            Assert.True(new DatabaseService(TestAmbiente.Config).VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2016 (ID INTEGER)").JaExiste);
         }
         finally
         {

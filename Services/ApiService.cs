@@ -10,17 +10,15 @@ public class ApiService
     private readonly string _baseUrl;
     private readonly string _agentToken;
 
-    public ApiService()
+    public ApiService(ConfiguracaoAgente config)
     {
         // Sem timeout do HttpClient: o padrão de 100s do .NET matava downloads de pacotes
         // grandes em links de cliente ruins. Quem cancela agora é o CancellationToken passado
         // até aqui a partir do stoppingToken do Worker -- inclusive permite parar o serviço no
         // meio de um download, o que o timeout fixo não permitia.
         _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        _baseUrl = (Environment.GetEnvironmentVariable("ATUALIZADOR_API_URL") ?? "http://localhost:3000/api").TrimEnd('/');
-        _agentToken = Environment.GetEnvironmentVariable("ATUALIZADOR_API_TOKEN") ?? "";
-        if (string.IsNullOrWhiteSpace(_agentToken))
-            throw new InvalidOperationException("Defina ATUALIZADOR_API_TOKEN antes de iniciar o agente.");
+        _baseUrl = config.ApiUrl.TrimEnd('/');
+        _agentToken = config.ApiToken;
     }
 
     // Propaga qualquer falha (401 de token errado, DNS morto, JSON inválido) em vez de engolir
@@ -36,9 +34,6 @@ public class ApiService
     // Um agente que cuida de vários sistemas faz uma chamada por sistema.
     public async Task<UpdateResponse?> CheckForUpdates(string cnpj, string sistema, string versaoAtual)
     {
-        if (string.IsNullOrWhiteSpace(sistema))
-            throw new InvalidOperationException("Defina ATUALIZADOR_SISTEMA antes de consultar atualizações.");
-
         string query = $"sistema={Uri.EscapeDataString(sistema)}&versao={Uri.EscapeDataString(versaoAtual)}";
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(cnpj)}?{query}");
         request.Headers.Add("X-Agent-Token", _agentToken);

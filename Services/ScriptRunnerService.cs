@@ -17,8 +17,7 @@ public class ScriptRunnerService
     private readonly DatabaseService _databaseService;
     private readonly ProcessService _processService;
     private readonly ApiService _apiService;
-
-    private readonly string _isqlPath = Environment.GetEnvironmentVariable("ATUALIZADOR_ISQL_PATH") ?? @"C:\Program Files (x86)\Firebird\Firebird_2_5\bin\isql.exe";
+    private readonly ConfiguracaoAgente _config;
 
     // Cada script roda isolado: um .sql com corpo de trigger/procedure sem o próprio "SET TERM"
     // pode confundir o parser do isql, mas isso fica contido a ESSE processo -- não contamina os
@@ -26,12 +25,13 @@ public class ScriptRunnerService
     // lote inteiro no meio).
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromMinutes(2);
 
-    public ScriptRunnerService(ILogger<ScriptRunnerService> logger, DatabaseService databaseService, ProcessService processService, ApiService apiService)
+    public ScriptRunnerService(ILogger<ScriptRunnerService> logger, DatabaseService databaseService, ProcessService processService, ApiService apiService, ConfiguracaoAgente config)
     {
         _logger = logger;
         _databaseService = databaseService;
         _processService = processService;
         _apiService = apiService;
+        _config = config;
     }
 
     /// <summary>
@@ -136,12 +136,7 @@ public class ScriptRunnerService
 
     private async Task RunIsqlAsync(string dbPath, string scriptPath, CancellationToken cancellationToken)
     {
-        string user = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_USER") ?? "SYSDBA";
-        string password = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_PASSWORD") ?? "";
-        string port = Environment.GetEnvironmentVariable("ATUALIZADOR_DB_PORT") ?? "3050";
-        if (string.IsNullOrWhiteSpace(password)) throw new InvalidOperationException("Defina ATUALIZADOR_DB_PASSWORD antes de aplicar scripts.");
-
-        string connectionTarget = $"localhost/{port}:{dbPath}";
+        string connectionTarget = $"localhost/{_config.DbPort}:{dbPath}";
 
         // ISC_USER/ISC_PASSWORD via ambiente, não "-user"/"-password" na linha de comando --
         // mesmo motivo do gfix/gbak em Worker.cs (item 10 do RISCOS-CONHECIDOS.md): a linha de
@@ -149,10 +144,10 @@ public class ScriptRunnerService
         // ambiente não. "-i" faz o isql tratar o script como entrada e sair sozinho ao final --
         // sem isso ele fica esperando comando interativo (igual acontecia com a tela do BScript).
         await _processService.RunProcessAsync(
-            _isqlPath,
+            _config.IsqlPath,
             new[] { connectionTarget, "-i", scriptPath },
             ScriptTimeout,
             cancellationToken,
-            new Dictionary<string, string> { ["ISC_USER"] = user, ["ISC_PASSWORD"] = password });
+            new Dictionary<string, string> { ["ISC_USER"] = _config.DbUser, ["ISC_PASSWORD"] = _config.DbPassword });
     }
 }

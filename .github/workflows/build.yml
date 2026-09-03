@@ -48,7 +48,7 @@ jobs:
       run: |
         # Falha cedo e com mensagem clara se algo essencial nao estiver la,
         # em vez de publicar um artefato incompleto com o build verde.
-        foreach ($obrigatorio in @("AtualizadorERP.exe", "7za.exe")) {
+        foreach ($obrigatorio in @("AtualizadorERP.exe", "7za.exe", "atualizador.ini.example")) {
           if (-not (Test-Path "./pasta_saida/$obrigatorio")) {
             throw "Faltando no pacote: $obrigatorio"
           }

@@ -1,6 +1,7 @@
 # --- Saida de compilacao do .NET ---
 bin/
 obj/
+publicado/
 *.user
 *.suo
 .vs/

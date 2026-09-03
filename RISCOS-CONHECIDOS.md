@@ -2,12 +2,13 @@
 
 Levantado por leitura linha a linha do código e por engenharia reversa dos
 binários e da base de produção reais (`BScript.exe`, `BEXE.FDB`, `BScript.Ini` e
-os scripts DDL). Última revisão: **31/08/2026** — nesta revisão, o ciclo
-completo (Fase 1 → Fase 3 → Fase 4) rodou de ponta a ponta pela primeira vez,
-contra cópias descartáveis de um `JUNIOR.fdb` e `BEXE.fdb` reais (366 tabelas,
-Fase 2 simulada gravando `AUTORIZADO` na mão), e terminou em `CONCLUIDO` com
-`VERSAO_ATUAL` promovida e os dois executáveis reais (`B_Vendas.exe` de 39 MB e
-`openssl.exe`) injetados corretamente no `BEXE.fdb`.
+os scripts DDL). Última revisão: **03/09/2026** — nesta revisão, o ciclo
+completo (Fase 1 → Fase 3 → Fase 4, com Fase 2 simulada) rodou de ponta a ponta
+pela primeira vez **passando pela API real** (não uma cópia manual de pacote) e
+como serviço Windows instalado de verdade, contra a cópia real de 366 tabelas
+(`JUNIOR_.FDB`) + `BEXE.FDB`; e o formato gravado em `EXECUTAVEIS` foi corrigido
+depois de comparado campo a campo contra um `BEXE.fdb` real e correto
+(`BEXE_certo.FDB`) -- ver os itens de 03/09/2026 abaixo.
 
 ---
 
@@ -214,23 +215,32 @@ conexão 2 (mesmo processo, depois do shutdown) falha. **Correção:**
 fecha sua própria conexão por chamada, pooling nunca trouxe benefício aqui, só
 esse risco durante a janela crítica da Fase 3.
 
-### 14. `VERSAOATUALIZADA` do `BEXE.fdb` real só cabe 5 caracteres, não 20 — ✅ resolvido em 01/09/2026
+### 14. `VERSAOATUALIZADA` do `BEXE.fdb` real só cabe 5 caracteres, não 20 — reaberto e resolvido de verdade em 03/09/2026
 `RDB$FIELD_LENGTH` da coluna é 20, mas o *charset* é UTF8 — `RDB$CHARACTER_LENGTH`
-real é **5**. O formato de versão que o painel usa hoje (`2026.08.27`, 10
-caracteres) nunca coube; `InjetarNovosBinarios` estourava
+real é **5**. Achado em 01/09/2026: o formato de versão que o painel usa hoje
+(`2026.08.27`, 10 caracteres) nunca coube; `InjetarNovosBinarios` estourava
 `"string right truncation"`, um erro Firebird genérico sem dizer qual coluna.
 
-**Correção:** `DatabaseService.GarantirColunaVersaoAtualizada` roda antes de toda
-injeção de binários (`InjetarNovosBinarios`) e amplia a coluna sozinha, via
-`ALTER TABLE EXECUTAVEIS ALTER COLUMN VERSAOATUALIZADA TYPE VARCHAR(20)`, se
-`RDB$CHARACTER_LENGTH` ainda estiver abaixo de 20 — idempotente, então rodar de
-novo num `BEXE.fdb` já ampliado é um no-op. Confirmado ao vivo contra o Firebird
-2.5 real desta máquina, fora dos testes automatizados: `ALTER COLUMN ... TYPE
-VARCHAR(n)` preserva o charset da coluna e trata `n` como número de caracteres
-(não bytes) — ampliar para `VARCHAR(20)` dá 20 caracteres reais de verdade, não
-mais um número decorativo. A checagem de tamanho em `InjetarNovosBinarios`
-continua como rede de segurança, só que agora com o limite de 20 (o mesmo que a
-coluna declara depois de ampliada) em vez do hardcoded 5.
+**"Correção" original (01/09/2026), baseada numa premissa errada:**
+`DatabaseService.GarantirColunaVersaoAtualizada` ampliava a coluna sozinha via
+`ALTER TABLE EXECUTAVEIS ALTER COLUMN VERSAOATUALIZADA TYPE VARCHAR(20)`, achando
+que o problema era só limite de tamanho para uma versão mais longa.
+
+**O que realmente estava acontecendo (achado em 03/09/2026, comparando campo a
+campo contra um `BEXE.fdb` real e correto, `BEXE_certo.FDB`):**
+`VERSAOATUALIZADA` nunca guardou uma versão — é um **flag de texto**
+(`"True"`/`"False"`). Por isso 5 caracteres reais sempre foram suficientes
+(`"False"` tem exatamente 5): a coluna nunca esteve pequena demais, o código é
+que gravava a coisa errada nela (a versão do pacote, duplicando o que já vai em
+`VERSAO`). O erro de truncamento de 01/09 era sintoma de gravar uma string longa
+onde deveria ir um booleano curto, não de uma coluna subdimensionada.
+
+**Correção de verdade:** `InjetarNovosBinarios` agora grava o literal `'True'`
+em `VERSAOATUALIZADA` (sinaliza "tem versão nova disponível"; reverter para
+`"False"` depois que os terminais baixarem é responsabilidade de outra parte do
+sistema, fora deste repositório) e não amplia mais a coluna — `GarantirColunaVersaoAtualizada`
+foi removida. Ver o item de 03/09/2026 "Quatro campos de `EXECUTAVEIS` gravados
+errado" logo abaixo para os outros três campos encontrados na mesma comparação.
 
 ---
 
@@ -285,15 +295,104 @@ novo antes da primeira instalação do agente.
 arranque do `Worker` (dentro do mesmo try/catch do ciclo, então uma falha de
 conexão no boot entra no backoff normal em vez de derrubar o serviço), checa
 `RDB$RELATIONS` e cria a tabela — com `VERSAO_NOVA`/`VERSAO_ATUAL` em
-`VARCHAR(50)`, não 20: como é este projeto que cria a tabela do zero, não há
-schema legado a respeitar, então vale deixar folga acima dos 20 caracteres reais
-que `EXECUTAVEIS.VERSAOATUALIZADA` aceita (item 14) em vez de criar um segundo
-limite apertado — mais a linha `ID = 1` inicial em `CONCLUIDO`. Idempotente: num
+`VARCHAR(50)`: como é este projeto que cria a tabela do zero, não há schema
+legado a respeitar, então vale deixar folga confortável para o formato de
+versão do painel em vez de um limite apertado — mais a linha `ID = 1` inicial
+em `CONCLUIDO`. Idempotente: num
 cliente que já tiver a tabela (ou na segunda execução em qualquer cliente), é um
 no-op. `SCRIPTS` continua confirmada contra o banco real (`ID`, `NOME_ARQUIVO`,
 `TIPO_EXECUCAO`, `DATA_EXECUCAO`, gerador `SEQUENCIA_SCRIPTS`) — ver item 1. O
 `BEXE.fdb` também foi confirmado com um arquivo real (tabela `EXECUTAVEIS`) — ver
 item 14.
+
+---
+
+## ✅ Achados de 03/09/2026: teste real via API + comparação campo a campo contra `BEXE.fdb` correto
+
+Primeiro teste do ciclo completo passando pela API de verdade (não uma cópia
+manual de pacote): baixado o pacote publicado real do B_Vendas (2026.09.01,
+50.258.096 bytes, SFX 7z com stub PE + payload a partir do offset 186368),
+conferido o SHA-256, extraído com um `7za.exe` obtido via pacote NuGet
+`7-Zip.CommandLine` (mesmo binário oficial, sem precisar instalar nada no
+sistema), e rodado através de um serviço Windows instalado de verdade
+(`AgenteAtualizadorERP_TESTE`, variáveis então via registro — antes da mudança
+pra `.ini` descrita abaixo). Terminou em `CONCLUIDO`, 70 segundos de execução,
+69 scripts pulados por deriva de schema (bate com a faixa documentada em
+"cópia limpa direto do dump do cliente" no item 1). Essa rodada revelou dois
+problemas reais:
+
+### 15. `openssl.exe`, dependência dentro do próprio pacote, era injetado como "produto novo"
+
+O pacote real do B_Vendas trazia, além do `B_Vendas.exe` na raiz,
+`Dlls-BVendas\openssl.exe` — usado internamente pelo ERP para HTTPS, não algo
+a distribuir. `InjetarNovosBinarios` varria `tempPath` com
+`SearchOption.AllDirectories`, então os dois eram gravados em `EXECUTAVEIS`
+como se fossem duas atualizações independentes — um terminal baixaria o
+`openssl.exe` achando que era o ERP.
+
+**Correção:** a varredura agora usa `SearchOption.TopDirectoryOnly` — só
+`.exe` soltos direto na raiz do pacote (a convenção real: produto solto,
+dependências em subpastas) entram na injeção.
+
+### 16. Quatro campos de `EXECUTAVEIS` gravados no formato errado
+
+Um arquivo `BEXE.fdb` real e correto (`BEXE_certo.FDB`) foi comparado campo a
+campo contra o que `InjetarNovosBinarios` gravava. Divergência em 4 dos 6
+campos:
+
+| Campo | Gravava (errado) | Formato real (confirmado) |
+|---|---|---|
+| `NOMEARQUIVO` | só o nome (`B_Vendas.exe`) | caminho completo no disco do cliente (`D:\Bredas\B_Vendas.exe`) |
+| `HASHEXE` | SHA-256 minúsculo (64 chars) | SHA-1 **maiúsculo** (40 chars) |
+| `VERSAO` | versão do pacote da API (`2026.09.01`) | versão embutida no próprio `.exe` (`FileVersion`, ex. `26.9.1.8`) |
+| `VERSAOATUALIZADA` | mesma versão do pacote (duplicando `VERSAO`) | flag de texto `"True"` (ver item 14, reaberto) |
+
+`VERSAO` foi confirmado batendo o `FileVersion` real do `B_Vendas.exe` baixado
+(`26.9.1.8`, lido via `FileVersionInfo.GetVersionInfo`) contra a linha
+correspondente do `BEXE_certo.FDB` (`26.8.27.14` para uma build de 27/08) —
+mesmo padrão `AA.M.D.build`. `NOMEARQUIVO` passou a ser montado a partir da
+pasta onde o **`BEXE.fdb` está** (não a do agente), já que é essa pasta que
+reflete onde o executável de fato mora no disco do cliente, independente de
+onde o `.ini` do agente aponte pra ela.
+
+**Correção:** `InjetarNovosBinarios` reescrito para gravar os 4 campos no
+formato confirmado — ver README.md, seção "Formato gravado em `EXECUTAVEIS`".
+
+### 17. Configuração por variável de ambiente trocada por `atualizador.ini`
+
+Instalar o serviço de teste (`sc.exe create` + variáveis via registro,
+`HKLM\SYSTEM\CurrentControlSet\Services\{nome}\Environment`) exigiu elevar duas
+vezes (UAC) e editar o registro na mão — inviável como processo repetível para
+instalar em dezenas de clientes em campo, ainda mais por alguém sem tanta
+intimidade com ferramentas de administração do Windows.
+
+**Correção:** toda a configuração (CNPJ, sistema, token, credencial do
+Firebird, caminhos) passou de `Environment.GetEnvironmentVariable("ATUALIZADOR_*")`
+espalhado em 4 arquivos para `Services/ConfiguracaoAgente.cs`, que lê um único
+`atualizador.ini` ao lado do executável — um arquivo que abre no Bloco de
+Notas, sem precisar de elevação nem console. Caminhos de banco/trabalho/backup
+ganharam default relativo à própria pasta do agente (ver item 18), então na
+maioria dos clientes só 4 chaves precisam ser preenchidas de verdade (CNPJ,
+SISTEMA, API_TOKEN, DB_PASSWORD) — o resto já resolve sozinho.
+
+### 18. Backups pré/pós eram apagados no mesmo ciclo em que nasciam
+
+`Directory.Delete(_tempPath, true)`, no caminho de sucesso de
+`ProcessarAtualizacao`, apagava `JUNIOR_PRE.fbk`/`JUNIOR_POS.fbk` junto com o
+resto da pasta de trabalho. Um backup que não sobrevive nem um ciclo não serve
+pra disaster recovery nenhum — é exatamente o que um DBA precisaria pra
+restaurar manualmente se um problema aparecesse dias depois da atualização,
+quando o rollback automático do próprio agente já não se aplica mais.
+
+**Correção:** `Worker.ArquivarBackups` move os dois arquivos para
+`PASTA_BACKUPS` (fora de `PASTA_TRABALHO`, que essa mesma função limpa logo
+depois) com nome único por versão + timestamp
+(`JUNIOR_PRE_9.9.9_20260903_114500.fbk`), antes de qualquer limpeza. Sem
+limpeza nenhuma, cada atualização bem-sucedida deixaria 2 backups novos
+parados pra sempre — um `JUNIOR.fdb` real pode ter centenas de MB/GB por
+cópia. `PodarBackupsAntigos` mantém só os últimos `BACKUPS_PARA_MANTER`
+ciclos (padrão: 10, ou seja, até 20 arquivos — pré + pós de cada um),
+apagando os mais antigos por data de criação.
 
 ---
 
@@ -317,10 +416,16 @@ item 14.
   banco) seguem falhando por deriva de schema (nome de tabela diferente, coluna
   que já mudou de outro jeito) e precisam de triagem manual.
 - **Convenção de `NOMEPRODUTO`.** A injeção usa o nome do arquivo sem extensão como
-  padrão; confirmado que funciona pro `B_Vendas.exe`/`openssl.exe` reais, mas não
-  há confirmação de que os terminais leem esse campo (em vez de `NOMEARQUIVO`) pra
-  decidir o que baixar.
-- **Testes de integração automatizados.** Ainda não existem (o que existe é este
-  documento e os testes manuais registrados nele). O ciclo completo contra cópias
-  descartáveis dos dois bancos já rodou uma vez com sucesso (31/08/2026) — vale
-  repetir antes de qualquer mudança futura no `Worker.cs`/`DatabaseService.cs`.
+  padrão; confirmado que funciona pro `B_Vendas.exe` real (`openssl.exe` não conta
+  mais, ver item 15), mas não há confirmação de que os terminais leem esse campo
+  (em vez de `NOMEARQUIVO`) pra decidir o que baixar.
+- **Testes de integração automatizados.** Existem 25, cobrindo `ProcessService`,
+  `DatabaseService`, `ScriptRunnerService` e o ciclo completo do `Worker`
+  (`AtualizadorERP.Tests/`, contra Firebird real, não mockado) — inclusive o
+  formato de `EXECUTAVEIS` confirmado no item 16 e a retenção de backups do
+  item 18. Ainda não cobrem: Fase 1 completa contra a API real (o teste de
+  03/09/2026 que validou isso foi manual, não faz parte da suíte), nem os
+  ~2300 scripts reais de um `Scripts-BVendas` de produção (os testes usam
+  scripts sintéticos pequenos) — vale repetir o ciclo completo manual contra
+  cópias descartáveis dos bancos reais antes de qualquer mudança futura maior
+  no `Worker.cs`/`DatabaseService.cs`.

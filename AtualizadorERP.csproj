@@ -13,6 +13,13 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- Vai junto de toda publicação, pra quem for instalar num cliente novo já ter um ponto de
+       partida (copiar pra atualizador.ini e preencher) em vez de descobrir na mão quais chaves o
+       ConfiguracaoAgente espera. -->
+  <ItemGroup>
+    <None Include="atualizador.ini.example" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- O glob padrão do SDK ("**/*.cs") só exclui bin/obj na raiz deste projeto, não os do
        AtualizadorERP.Tests aninhado. Sem isso, o build principal tentava compilar os testes
        (sem referência ao xUnit) e colidia com o AssemblyInfo gerado no obj/ dos testes. -->

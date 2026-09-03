@@ -1,0 +1,57 @@
+; Copie este arquivo para "atualizador.ini" (mesma pasta do AtualizadorERP.exe) e preencha os
+; valores abaixo. O agente lê esse arquivo uma vez, na inicializacao -- se faltar alguma chave
+; obrigatoria, ele recusa subir em vez de rodar meio configurado.
+;
+; "atualizador.ini" NUNCA deve ser commitado (tem credencial de verdade) -- ja esta no .gitignore
+; do repositorio (*.ini). Esse .example, sem segredo nenhum, e' o unico dos dois que fica versionado.
+;
+; Convencao de pastas: o agente mora dentro da propria pasta do cliente (ex.: Bredas\Atualizador\),
+; ao lado de JUNIOR.fdb/BEXE.fdb um nivel acima. Se a sua instalacao seguir esse padrao, as chaves
+; de caminho abaixo (JUNIOR_FDB, BEXE_FDB, PASTA_TRABALHO, PASTA_BACKUPS) podem ficar comentadas --
+; os defaults ja resolvem certo. Só descomente se a estrutura desse cliente for diferente.
+
+; ---- Obrigatorias ----
+
+; CNPJ do cliente (só numeros ou formatado, tanto faz -- vai direto pro log da API).
+CNPJ=
+
+; Precisa bater, letra por letra, com o nome de um sistema cadastrado na aba Sistemas do painel
+; web (ex.: B_Vendas, B_NFe, B_Ordem). Uma maquina que roda mais de um sistema precisa de uma
+; instalacao do agente (pasta + atualizador.ini) por sistema.
+SISTEMA=
+
+; Precisa bater com o AGENT_API_TOKEN configurado no servidor (web/server/.env).
+API_TOKEN=
+
+; Senha do usuario do Firebird (DB_USER abaixo, SYSDBA por padrao).
+DB_PASSWORD=
+
+; ---- Opcionais (comentadas = usa o valor padrao) ----
+
+; API_URL=http://localhost:3000/api
+; DB_USER=SYSDBA
+; DB_PORT=3050
+; GFIX_PATH=C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gfix.exe
+; GBAK_PATH=C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gbak.exe
+; ISQL_PATH=C:\Program Files (x86)\Firebird\Firebird_2_5\bin\isql.exe
+
+; Caminho do JUNIOR.fdb deste cliente. Default: "..\JUNIOR.FDB" (um nivel acima da pasta do
+; agente) -- so' precisa preencher se a estrutura real fugir disso.
+; JUNIOR_FDB=..\JUNIOR.FDB
+
+; Caminho do BEXE.fdb deste cliente. Default: "..\BEXE.FDB". E' tambem a partir da pasta ONDE
+; ESTE ARQUIVO ESTIVER que o agente monta o caminho completo gravado em EXECUTAVEIS.NOMEARQUIVO
+; (ex.: "D:\Bredas\B_Vendas.exe") -- então aponte pro BEXE.fdb real do cliente, não uma copia.
+; BEXE_FDB=..\BEXE.FDB
+
+; Pasta de trabalho descartavel (downloads/extracao/backup em andamento). Default: "_trabalho"
+; dentro da propria pasta do agente.
+; PASTA_TRABALHO=_trabalho
+
+; Pasta de backups PERSISTENTE (nunca e' varrida pela limpeza automatica). Default: "Backups"
+; dentro da propria pasta do agente.
+; PASTA_BACKUPS=Backups
+
+; Quantos ciclos de atualizacao bem-sucedidos ficam guardados em PASTA_BACKUPS (pre + pos cada
+; um) antes de o mais antigo ser apagado automaticamente. Default: 10.
+; BACKUPS_PARA_MANTER=10
