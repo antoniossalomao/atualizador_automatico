@@ -12,8 +12,12 @@
 
 ; ---- Obrigatorias ----
 
-; CNPJ do cliente (só numeros ou formatado, tanto faz -- vai direto pro log da API).
-CNPJ=
+; Codigo do cliente cadastrado na aba Clientes do painel web (coluna "codigo",
+; ex.: C016058) -- nao precisa ser CNPJ de verdade, e' so' um identificador
+; livre. Se bater com o "codigo" de um cliente cadastrado, o painel mostra o
+; nome/cidade certos nos logs desse agente; se nao bater com nenhum, ainda
+; funciona igual, so' aparece o valor cru em vez do nome da empresa.
+CODIGO_CLIENTE=
 
 ; Precisa bater, letra por letra, com o nome de um sistema cadastrado na aba Sistemas do painel
 ; web (ex.: B_Vendas, B_NFe, B_Ordem). Uma maquina que roda mais de um sistema precisa de uma

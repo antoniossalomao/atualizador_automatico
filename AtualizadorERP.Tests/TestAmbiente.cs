@@ -27,7 +27,7 @@ public static class TestAmbiente
         string backups = pastaBackups ?? Directory.CreateTempSubdirectory("atualizador_backups_").FullName;
 
         return new ConfiguracaoAgente(
-            cnpj: "00000000000000",
+            codigoCliente: "00000000000000",
             sistema: "SISTEMA_TESTE",
             apiUrl: "http://localhost:59999/api-inexistente",
             apiToken: "token-de-teste",

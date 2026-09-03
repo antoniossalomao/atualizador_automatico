@@ -28,7 +28,7 @@ tabela `SYS_ATUALIZACAO`, no `JUNIOR.fdb` do cliente.
 | `PROCESSANDO` | Execução crítica em andamento | Agente |
 
 ### Fase 1 — Preparo invisível
-Consulta a API com CNPJ e versão atual; se houver versão nova, baixa os pacotes,
+Consulta a API com o código do cliente e versão atual; se houver versão nova, baixa os pacotes,
 confere o **SHA-256** de cada um, extrai com o `7za.exe` e grava `PENDENTE`.
 
 ### Fase 2 — Decisão do usuário
@@ -129,7 +129,7 @@ Notas.
 
 | Chave | Padrão | Obrigatória |
 |---|---|:-:|
-| `CNPJ` | — | **sim** |
+| `CODIGO_CLIENTE` | — | **sim** |
 | `SISTEMA` | — | **sim** |
 | `API_TOKEN` | — | **sim** |
 | `DB_PASSWORD` | — | **sim** |
@@ -152,6 +152,14 @@ deste repositório (`*.ini`). O `.example`, sem segredo nenhum, é o único dos
 dois que fica versionado.
 
 `API_TOKEN` precisa bater com o `AGENT_API_TOKEN` do servidor.
+
+`CODIGO_CLIENTE` não precisa ser uma CNPJ de verdade — é só um identificador
+livre (a API/banco do servidor chamam esse campo de "cnpj" por herança
+histórica do projeto, mas nunca validam formato). Recomendado usar o mesmo
+`codigo` já cadastrado na aba **Clientes** do painel (ex.: `C016058`): o
+painel casa esse valor com o cliente automaticamente (removendo pontuação dos
+dois lados) e mostra nome/cidade nos logs; qualquer outro valor não-vazio
+também funciona, só aparece cru em vez do nome da empresa.
 
 `SISTEMA` precisa bater, letra por letra, com o nome de um sistema
 cadastrado na aba **Sistemas** do painel web (ex.: `B_Vendas`, `B_NFe`,

@@ -6,16 +6,16 @@ namespace AtualizadorERP.Services;
 /// registro (HKLM\...\Services\{nome}\Environment), o que é inviável pra quem instala o agente
 /// em dezenas de clientes em campo -- um .ini ao lado do .exe abre no Bloco de Notas.
 ///
-/// Só o que realmente varia por cliente e não dá pra descobrir sozinho fica aqui (CNPJ, token da
-/// API, sistema, credencial do Firebird). Caminhos de banco/backup/trabalho têm default relativo
-/// à própria pasta do agente -- convenção real: o agente mora dentro da pasta do cliente (ex.:
+/// Só o que realmente varia por cliente e não dá pra descobrir sozinho fica aqui (código do
+/// cliente, token da API, sistema, credencial do Firebird). Caminhos de banco/backup/trabalho têm
+/// default relativo à própria pasta do agente -- convenção real: o agente mora dentro da pasta do cliente (ex.:
 /// Bredas\Atualizador\), com JUNIOR.fdb/BEXE.fdb no mesmo nível de onde o BEXE_FDB resolver (por
 /// padrão, um nível acima da pasta do agente). Cada caminho também aceita override explícito no
 /// próprio .ini, pra clientes cuja estrutura fugir do padrão.
 /// </summary>
 public class ConfiguracaoAgente
 {
-    public string Cnpj { get; }
+    public string CodigoCliente { get; }
     public string Sistema { get; }
     public string ApiUrl { get; }
     public string ApiToken { get; }
@@ -51,13 +51,13 @@ public class ConfiguracaoAgente
         if (!File.Exists(caminhoIni))
             throw new InvalidOperationException(
                 $"Arquivo de configuração não encontrado: {caminhoIni} -- crie um '{NomeArquivoPadrao}' ao lado do " +
-                "executável (comece copiando atualizador.ini.example) com pelo menos CNPJ, SISTEMA, API_TOKEN e " +
-                "DB_PASSWORD preenchidos. Ver README.md.");
+                "executável (comece copiando atualizador.ini.example) com pelo menos CODIGO_CLIENTE, SISTEMA, " +
+                "API_TOKEN e DB_PASSWORD preenchidos. Ver README.md.");
 
         var valores = LerIni(caminhoIni);
         string pastaAgente = Path.GetDirectoryName(Path.GetFullPath(caminhoIni))!;
 
-        Cnpj = Obrigatorio(valores, "CNPJ", caminhoIni);
+        CodigoCliente = Obrigatorio(valores, "CODIGO_CLIENTE", caminhoIni);
         Sistema = Obrigatorio(valores, "SISTEMA", caminhoIni);
         ApiToken = Obrigatorio(valores, "API_TOKEN", caminhoIni);
         DbPassword = Obrigatorio(valores, "DB_PASSWORD", caminhoIni);
@@ -81,13 +81,13 @@ public class ConfiguracaoAgente
     // disco e precisam de um JUNIOR/BEXE/pasta de trabalho próprios por teste (bancos Firebird
     // descartáveis, um por teste) -- ver AtualizadorERP.Tests/TestAmbiente.cs.
     internal ConfiguracaoAgente(
-        string cnpj, string sistema, string apiUrl, string apiToken,
+        string codigoCliente, string sistema, string apiUrl, string apiToken,
         string dbUser, string dbPassword, string dbPort,
         string juniorFdbPath, string bexeFdbPath,
         string gfixPath, string gbakPath, string isqlPath,
         string pastaTrabalho, string pastaBackups, int backupsParaManter)
     {
-        Cnpj = cnpj;
+        CodigoCliente = codigoCliente;
         Sistema = sistema;
         ApiUrl = apiUrl;
         ApiToken = apiToken;

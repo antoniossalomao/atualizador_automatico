@@ -366,14 +366,24 @@ vezes (UAC) e editar o registro na mão — inviável como processo repetível p
 instalar em dezenas de clientes em campo, ainda mais por alguém sem tanta
 intimidade com ferramentas de administração do Windows.
 
-**Correção:** toda a configuração (CNPJ, sistema, token, credencial do
-Firebird, caminhos) passou de `Environment.GetEnvironmentVariable("ATUALIZADOR_*")`
-espalhado em 4 arquivos para `Services/ConfiguracaoAgente.cs`, que lê um único
-`atualizador.ini` ao lado do executável — um arquivo que abre no Bloco de
-Notas, sem precisar de elevação nem console. Caminhos de banco/trabalho/backup
-ganharam default relativo à própria pasta do agente (ver item 18), então na
-maioria dos clientes só 4 chaves precisam ser preenchidas de verdade (CNPJ,
-SISTEMA, API_TOKEN, DB_PASSWORD) — o resto já resolve sozinho.
+**Correção:** toda a configuração (código do cliente, sistema, token,
+credencial do Firebird, caminhos) passou de
+`Environment.GetEnvironmentVariable("ATUALIZADOR_*")` espalhado em 4 arquivos
+para `Services/ConfiguracaoAgente.cs`, que lê um único `atualizador.ini` ao
+lado do executável — um arquivo que abre no Bloco de Notas, sem precisar de
+elevação nem console. Caminhos de banco/trabalho/backup ganharam default
+relativo à própria pasta do agente (ver item 18), então na maioria dos
+clientes só 4 chaves precisam ser preenchidas de verdade (`CODIGO_CLIENTE`,
+`SISTEMA`, `API_TOKEN`, `DB_PASSWORD`) — o resto já resolve sozinho.
+
+A chave `CNPJ` original virou `CODIGO_CLIENTE` (03/09/2026): o campo nunca foi
+uma CNPJ de verdade — nem a API nem o banco do servidor validam formato, e o
+que o painel de fato casa (`VersaoRepository.logs`, removendo pontuação dos
+dois lados) é contra `clientes.codigo`, que na base real é um código interno
+tipo `C016058`, não um CNPJ. O nome antigo já causava confusão sobre o que
+preencher ali. O contrato de rede não mudou — o agente continua mandando esse
+valor no parâmetro `cnpj` da API/log, só o nome do lado do agente ficou
+condizente com o que o valor realmente é.
 
 ### 18. Backups pré/pós eram apagados no mesmo ciclo em que nasciam
 

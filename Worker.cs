@@ -56,7 +56,7 @@ public class Worker : BackgroundService
                     // valendo mesmo que uma tentativa anterior tenha falhado no meio -- por isso
                     // não precisa de um arquivo solto fora do banco pra "lembrar" pra onde reverter.
                     string versaoAtual = _databaseService.GetVersaoConfirmada(_config.JuniorFdbPath);
-                    var updateInfo = await _apiService.CheckForUpdates(_config.Cnpj, _config.Sistema, versaoAtual);
+                    var updateInfo = await _apiService.CheckForUpdates(_config.CodigoCliente, _config.Sistema, versaoAtual);
                     if (updateInfo?.HasUpdate == true)
                     {
                         // Começa de uma pasta vazia: PastaPacotes só é limpa no caminho de sucesso,
@@ -169,7 +169,7 @@ public class Worker : BackgroundService
             await _processService.RunProcessAsync(_config.GbakPath, new[] { "-b", alvoJunior, preBkp }, GbakTimeout, stoppingToken, credenciaisEnv);
             backupValido = true;
 
-            int scriptsComFalha = await _scriptRunnerService.RunPendingScriptsAsync(_config.JuniorFdbPath, PastaPacotes, _config.Cnpj, _config.Sistema, stoppingToken);
+            int scriptsComFalha = await _scriptRunnerService.RunPendingScriptsAsync(_config.JuniorFdbPath, PastaPacotes, _config.CodigoCliente, _config.Sistema, stoppingToken);
 
             // "versaoAlvo", não uma nova leitura de VERSAO_NOVA: o valor não muda durante o
             // processamento (só GetVersaoConfirmada/VERSAO_ATUAL avança, e só depois do sucesso
@@ -195,7 +195,7 @@ public class Worker : BackgroundService
                 ? $"Atualização concluída com {scriptsComFalha} script(s) pulado(s) por erro -- ver detalhes nos retornos individuais."
                 : "Atualização concluída com sucesso.";
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, "CONCLUIDO", null, scriptsComFalha > 0 ? mensagemFinal : null);
-            await _apiService.SendLog(_config.Cnpj, _config.Sistema, "SUCESSO", mensagemFinal, versaoAlvo, versaoAnterior, cronometro.Elapsed);
+            await _apiService.SendLog(_config.CodigoCliente, _config.Sistema, "SUCESSO", mensagemFinal, versaoAlvo, versaoAnterior, cronometro.Elapsed);
 
             ArquivarBackups(preBkp, posBkp, versaoAlvo);
             if (Directory.Exists(PastaPacotes)) Directory.Delete(PastaPacotes, true);
@@ -229,7 +229,7 @@ public class Worker : BackgroundService
             // "versaoAlvo" aqui é a versão que esta tentativa buscava e NÃO alcançou (o rollback
             // acima já devolveu o banco pro estado de "versaoAnterior") -- é o que o painel precisa
             // pra mostrar "tentou ir pra 2026.09.01, falhou, continua na 2026.08.27".
-            await _apiService.SendLog(_config.Cnpj, _config.Sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed);
+            await _apiService.SendLog(_config.CodigoCliente, _config.Sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed);
             _falhasConsecutivas++;
         }
     }

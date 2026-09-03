@@ -52,7 +52,7 @@ public class ScriptRunnerService
     /// por causa de um script legado sem tabela/nome batendo (ex.: EMPRESA vs EMPRESAS) bloquearia
     /// pra sempre os milhares de outros que aplicam limpo.
     /// </summary>
-    public async Task<int> RunPendingScriptsAsync(string dbPath, string pacotesPath, string cnpjCliente, string sistema, CancellationToken cancellationToken = default)
+    public async Task<int> RunPendingScriptsAsync(string dbPath, string pacotesPath, string codigoCliente, string sistema, CancellationToken cancellationToken = default)
     {
         var scripts = Directory.GetFiles(pacotesPath, "*.sql", SearchOption.AllDirectories)
             .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
@@ -108,7 +108,7 @@ public class ScriptRunnerService
                 // Sem versão/duração aqui: este log reporta a falha de UM script no meio do lote,
                 // não a transição de versão completa -- essa (com sucesso ou erro) é reportada uma
                 // vez só, no fim, por Worker.ProcessarAtualizacao.
-                await _apiService.SendLog(cnpjCliente, sistema, "ERRO", relatorio);
+                await _apiService.SendLog(codigoCliente, sistema, "ERRO", relatorio);
                 falhas++;
                 continue;
             }

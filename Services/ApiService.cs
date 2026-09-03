@@ -32,10 +32,14 @@ public class ApiService
     // agente"). Antes, sem esse parâmetro, o servidor respondia com a última versão publicada de
     // QUALQUER sistema -- um agente cuidando do B_Vendas podia acabar recebendo o pacote do B_NFe.
     // Um agente que cuida de vários sistemas faz uma chamada por sistema.
-    public async Task<UpdateResponse?> CheckForUpdates(string cnpj, string sistema, string versaoAtual)
+    public async Task<UpdateResponse?> CheckForUpdates(string codigoCliente, string sistema, string versaoAtual)
     {
+        // A API continua recebendo isso no parametro de URL "cnpj" (contrato do servidor, ver
+        // web/server/src/routes) -- só o nome do lado do agente mudou pra refletir o que o valor
+        // realmente é na prática (o "codigo" do cliente cadastrado no painel, não uma CNPJ de
+        // verdade; ver README.md e RISCOS-CONHECIDOS.md).
         string query = $"sistema={Uri.EscapeDataString(sistema)}&versao={Uri.EscapeDataString(versaoAtual)}";
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(cnpj)}?{query}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(codigoCliente)}?{query}");
         request.Headers.Add("X-Agent-Token", _agentToken);
         var response = await _httpClient.SendAsync(request);
         response.EnsureSuccessStatusCode();
@@ -83,7 +87,7 @@ public class ApiService
 
     // Nome da máquina lido uma vez só (não muda durante a vida do processo) -- é o que o painel
     // de Distribuição mostra ao lado da empresa (ex.: "Padaria Central · CAIXA-01"), útil quando o
-    // mesmo CNPJ tem várias estações rodando o agente.
+    // mesmo código de cliente tem várias estações rodando o agente.
     private static readonly string _nomeMaquina = Environment.MachineName;
 
     /// <summary>
@@ -99,13 +103,16 @@ public class ApiService
     /// opcionais -- ficam nulos nos logs de falha de script individual (ScriptRunnerService), que
     /// reportam um problema no MEIO do processo, não a transição de versão completa.
     /// </summary>
-    public async Task SendLog(string cnpj, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null)
+    public async Task SendLog(string codigoCliente, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null)
     {
         try
         {
+            // "cnpj" no payload, não "codigoCliente": é o nome de campo que o endpoint
+            // /update/log do servidor espera (ver web/server/src/services/VersaoService.js) --
+            // contrato de rede não muda só porque o nome do lado do agente mudou.
             var payload = new
             {
-                cnpj,
+                cnpj = codigoCliente,
                 sistema,
                 status,
                 detalhes,
