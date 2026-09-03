@@ -15,24 +15,54 @@
 
   <!-- Vai junto de toda publicação, pra quem for instalar num cliente novo já ter um ponto de
        partida (copiar pra atualizador.ini e preencher) em vez de descobrir na mão quais chaves o
-       ConfiguracaoAgente espera. -->
+       ConfiguracaoAgente espera. "Update", não "Include": o SDK já inclui esse arquivo por padrão
+       (glob implícito de "None"/"Content"); usar "Include" cria um SEGUNDO item com a mesma
+       Identity, e a limpeza incremental do publish (que decide sozinha o que é "saída obsoleta")
+       se confunde sobre qual dos dois é o de verdade: reproduzido ao vivo, o arquivo aparecia na
+       primeira publicação e sumia sozinho na segunda, sem nenhuma mudança de código no meio.
+       "Update" só adiciona a metadata no item que o SDK já criou, sem duplicar nada, mesmo
+       padrão já usado em AtualizadorERP.Tests.csproj para o xunit.runner.json. -->
   <ItemGroup>
-    <None Include="atualizador.ini.example" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="atualizador.ini.example" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- O glob padrão do SDK ("**/*.cs") só exclui bin/obj na raiz deste projeto, não os do
-       AtualizadorERP.Tests aninhado. Sem isso, o build principal tentava compilar os testes
-       (sem referência ao xUnit) e colidia com o AssemblyInfo gerado no obj/ dos testes. -->
+  <!-- O glob padrão do SDK ("**/*.cs") pega qualquer coisa dentro da pasta do projeto,
+       recursivamente, inclusive pastas de SAÍDA de um "dotnet publish -o" anterior, se o
+       destino cair dentro da própria pasta do projeto (README usa "-o publicado", o CI usa
+       "-o ./Atualizador"). Sem excluir essas pastas aqui, cada publish novo varre o conteúdo do
+       publish anterior como se fosse código-fonte e copia ele de novo pra dentro da saída nova,
+       gerando pastas se aninhando dentro de si mesmas a cada rodada (encontrado numa auditoria:
+       "AtualizadorERP.Tests\bin\Debug\net8.0\AtualizadorERP.Tests\bin\Debug\net8.0\..." repetido
+       várias vezes). "**\" no início de cada padrão (não só "AtualizadorERP.Tests\**" alinhado na
+       raiz) garante que isso funciona mesmo quando uma dessas pastas já apareceu aninhada dentro
+       de outra por causa desse mesmo bug antes de ser corrigido aqui.
+
+       "Content", não só "Compile"/"None"/"EmbeddedResource": faltava esse item type aqui, e é
+       exatamente ele que o SDK usa por padrão para arquivos ".json" soltos (o "_ContentIncludedByDefault"
+       que aparece num build com verbosidade diagnóstica), então "AtualizadorERP.Tests\xunit.runner.json"
+       continuava vazando pro publish mesmo com os outros três já cobertos. Achado publicando de
+       verdade e comparando o conteúdo do pacote gerado contra o esperado. -->
   <ItemGroup>
-    <Compile Remove="AtualizadorERP.Tests\**" />
+    <Compile Remove="**\AtualizadorERP.Tests\**" />
     <Compile Remove="**\bin\**" />
     <Compile Remove="**\obj\**" />
-    <None Remove="AtualizadorERP.Tests\**" />
+    <Compile Remove="**\publicado\**" />
+    <Compile Remove="**\Atualizador\**" />
+    <None Remove="**\AtualizadorERP.Tests\**" />
     <None Remove="**\bin\**" />
     <None Remove="**\obj\**" />
-    <EmbeddedResource Remove="AtualizadorERP.Tests\**" />
+    <None Remove="**\publicado\**" />
+    <None Remove="**\Atualizador\**" />
+    <Content Remove="**\AtualizadorERP.Tests\**" />
+    <Content Remove="**\bin\**" />
+    <Content Remove="**\obj\**" />
+    <Content Remove="**\publicado\**" />
+    <Content Remove="**\Atualizador\**" />
+    <EmbeddedResource Remove="**\AtualizadorERP.Tests\**" />
     <EmbeddedResource Remove="**\bin\**" />
     <EmbeddedResource Remove="**\obj\**" />
+    <EmbeddedResource Remove="**\publicado\**" />
+    <EmbeddedResource Remove="**\Atualizador\**" />
   </ItemGroup>
 
 </Project>
