@@ -28,7 +28,7 @@ public class WorkerIntegrationTests
 
         databaseService = new DatabaseService(config);
         var processService = new ProcessService(NullLogger<ProcessService>.Instance);
-        var apiService = new ApiService(config);
+        var apiService = new ApiService(NullLogger<ApiService>.Instance, config);
         var extractionService = new ExtractionService(NullLogger<ExtractionService>.Instance, processService);
         var scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService, config);
 
@@ -129,7 +129,7 @@ public class WorkerIntegrationTests
     {
         var databaseService = new DatabaseService(config);
         var processService = new ProcessService(NullLogger<ProcessService>.Instance);
-        var apiService = new ApiService(config);
+        var apiService = new ApiService(NullLogger<ApiService>.Instance, config);
         var extractionService = new ExtractionService(NullLogger<ExtractionService>.Instance, processService);
         var scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService, config);
         return new Worker(NullLogger<Worker>.Instance, apiService, databaseService, extractionService, processService, scriptRunnerService, config);

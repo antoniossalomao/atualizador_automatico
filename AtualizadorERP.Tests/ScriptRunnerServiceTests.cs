@@ -17,7 +17,7 @@ public class ScriptRunnerServiceTests
     {
         var databaseService = new DatabaseService(TestAmbiente.Config);
         var processService = new ProcessService(NullLogger<ProcessService>.Instance);
-        var apiService = new ApiService(TestAmbiente.Config);
+        var apiService = new ApiService(NullLogger<ApiService>.Instance, TestAmbiente.Config);
         _scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService, TestAmbiente.Config);
     }
 

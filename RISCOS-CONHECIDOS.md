@@ -406,6 +406,20 @@ apagando os mais antigos por data de criação.
 
 ---
 
+## ✅ Item resolvido em 10/09/2026: `ApiService.cs` mais robusto e explicativo
+
+Cinco melhorias pontuais em [`Services/ApiService.cs`](Services/ApiService.cs), levantadas numa revisão de código anterior e implementadas nesta data:
+
+- **Timeout curto (30s) só na checagem de versão e no envio de log.** O `HttpClient` continua com timeout infinito (necessário para downloads de pacote grandes), mas `CheckForUpdates`/`SendLog` agora usam um `CancellationTokenSource` combinado ao `stoppingToken` do `Worker`, com `CancelAfter(30s)` — antes, uma conexão travada (sem erro, só sem nunca retornar) prendia o ciclo inteiro até o serviço ser parado na mão, porque o backoff só age depois que a chamada *termina*, com erro ou sem.
+- **Corpo da resposta de erro incluído na exceção.** Novo helper `GarantirSucessoComCorpoAsync` substitui os dois `EnsureSuccessStatusCode()` — um 401 com `{"error":"token inválido"}` agora aparece assim no log, em vez de só "401 Unauthorized" sem contexto nenhum. Preserva o `HttpStatusCode` na exceção (não só o texto), usado pelo item do retry abaixo.
+- **`SendLog` não falha mais em silêncio total.** O `catch {}` vazio virou `catch (Exception ex) { _logger.LogWarning(ex, ...) }` — continua fire-and-forget (uma falha de log não pode derrubar um ciclo que já rodou de verdade localmente), mas agora fica um rastro.
+- **`ApiService` ganhou `ILogger<ApiService>`** (injeção automática via `services.AddSingleton<ApiService>()`, sem mudar `Program.cs`), logando início/resultado de cada checagem e de cada download — antes, só dava para saber o que a classe fez lendo o estado gravado no banco.
+- **Retry curto (3 tentativas, 2s/5s de backoff) no download de pacote**, dentro de `BaixarArquivoAutenticadoAsync` — motivado por um teste real (03/09/2026) em que uma queda de rede perto do fim de um download de 50MB obrigava a próxima tentativa a esperar a próxima janela do backoff do `Worker` (até 30min) e recomeçar do zero. `DeveTentarNovamenteAposFalha` pula o retry em erro de autenticação (401/403, que não se resolve tentando de novo) e em cancelamento explícito do serviço.
+
+**Testado:** `dotnet build` do projeto principal, limpo (0 erros/0 avisos). Os 3 pontos que instanciavam `ApiService` diretamente nos testes (`ScriptRunnerServiceTests.cs`, `WorkerIntegrationTests.cs` ×2) foram ajustados para passar `NullLogger<ApiService>.Instance` — a suíte de testes em si não pôde ser rodada nesta revisão por um motivo **não relacionado**: o working tree já tinha, antes desta mudança, alterações não commitadas em `DatabaseService.cs`/`ConfiguracaoAgente.cs` que deixaram `DatabaseServiceTests.cs`/`WorkerIntegrationTests.cs` com assinaturas desatualizadas (confirmado via `git stash` que o problema já existia sem esta mudança).
+
+---
+
 ## ⚪ Pendências de ambiente (não corrigíveis só com código)
 - **Fase 2 (Delphi) não existe.** Não há nenhum `.pas`/`.dpr`. Ler `PENDENTE`,
   perguntar ao usuário e gravar `AUTORIZADO` ainda precisa ser escrito no ERP. Nos

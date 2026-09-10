@@ -6,16 +6,38 @@ namespace AtualizadorERP.Services;
 
 public class ApiService
 {
+    private readonly ILogger<ApiService> _logger;
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly string _agentToken;
 
-    public ApiService(ConfiguracaoAgente config)
+    // Timeout curto só para checagem de versão e envio de log -- chamadas pequenas por natureza
+    // (um GET/POST comum, não um download). Sem isso, uma conexão travada (nem erro nem sucesso,
+    // uma chamada que simplesmente nunca retorna) prendia o ciclo inteiro até alguém parar o
+    // serviço na mão: o backoff nunca entrava em ação porque a chamada nunca terminava, com ou
+    // sem erro. O download de pacote continua com o timeout infinito do _httpClient (ver
+    // construtor) -- só estas duas chamadas ganham um teto próprio, via
+    // CancellationTokenSource.CreateLinkedTokenSource combinado ao stoppingToken do Worker (para
+    // parar o serviço no meio de uma checagem continuar funcionando, igual já funcionava para
+    // download).
+    private static readonly TimeSpan TimeoutChecagemELog = TimeSpan.FromSeconds(30);
+
+    // Retry curto só para quedas de rede NO MEIO de um download -- não serve para erro de
+    // autenticação (401/403), que não se resolve tentando de novo (ver
+    // DeveTentarNovamenteAposFalha). Motivado por um teste real (03/09/2026): um pacote de 50MB
+    // caiu perto do fim, e a próxima tentativa só rodava na próxima janela do backoff do Worker
+    // (até 30min), recomeçando o download do zero.
+    private const int TentativasDownload = 3;
+    private static readonly TimeSpan[] AtrasosRetryDownload = { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5) };
+
+    public ApiService(ILogger<ApiService> logger, ConfiguracaoAgente config)
     {
+        _logger = logger;
         // Sem timeout do HttpClient: o padrão de 100s do .NET matava downloads de pacotes
         // grandes em links de cliente ruins. Quem cancela agora é o CancellationToken passado
         // até aqui a partir do stoppingToken do Worker -- inclusive permite parar o serviço no
-        // meio de um download, o que o timeout fixo não permitia.
+        // meio de um download, o que o timeout fixo não permitia. Checagem de versão e envio de
+        // log usam o teto próprio e curto de TimeoutChecagemELog, não este timeout infinito.
         _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _baseUrl = config.ApiUrl.TrimEnd('/');
         _agentToken = config.ApiToken;
@@ -28,12 +50,14 @@ public class ApiService
     // e o cliente ficava invisível sem log local nem backoff.
     //
     // "sistema" é obrigatório desde que o servidor passou a manter uma versão publicada POR
-    // SISTEMA em vez de uma só global (ver web/docs/REVISAO_INTERFACE.md, seção "Contrato do
-    // agente"). Antes, sem esse parâmetro, o servidor respondia com a última versão publicada de
+    // SISTEMA em vez de uma só global (ver web/docs/DOCUMENTACAO_CONSOLIDADA.md, seção "Contrato
+    // do agente (Worker C#)"). Antes, sem esse parâmetro, o servidor respondia com a última versão publicada de
     // QUALQUER sistema -- um agente cuidando do B_Vendas podia acabar recebendo o pacote do B_NFe.
     // Um agente que cuida de vários sistemas faz uma chamada por sistema.
-    public async Task<UpdateResponse?> CheckForUpdates(string codigoCliente, string sistema, string versaoAtual)
+    public async Task<UpdateResponse?> CheckForUpdates(string codigoCliente, string sistema, string versaoAtual, CancellationToken cancellationToken = default)
     {
+        _logger.LogInformation("Verificando atualização do sistema {Sistema} para o cliente {Cliente} (versão atual: {VersaoAtual}).", sistema, codigoCliente, versaoAtual);
+
         // A API continua recebendo isso no parametro de URL "cnpj" (contrato do servidor, ver
         // web/server/src/routes) -- só o nome do lado do agente mudou pra refletir o que o valor
         // realmente é na prática (o "codigo" do cliente cadastrado no painel, não uma CNPJ de
@@ -41,10 +65,39 @@ public class ApiService
         string query = $"sistema={Uri.EscapeDataString(sistema)}&versao={Uri.EscapeDataString(versaoAtual)}";
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/check/{Uri.EscapeDataString(codigoCliente)}?{query}");
         request.Headers.Add("X-Agent-Token", _agentToken);
-        var response = await _httpClient.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<UpdateResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeoutChecagemELog);
+        var response = await _httpClient.SendAsync(request, timeoutCts.Token);
+        await GarantirSucessoComCorpoAsync(response);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var resultado = JsonSerializer.Deserialize<UpdateResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        _logger.LogInformation(
+            "Sistema {Sistema}: {Resultado}.",
+            sistema,
+            resultado?.HasUpdate == true ? $"atualização disponível (versão {resultado.Version})" : "já está na versão mais recente"
+        );
+        return resultado;
+    }
+
+    /// <summary>
+    /// Confere o status da resposta e, em caso de falha, inclui o CORPO da resposta na mensagem
+    /// da exceção -- <c>EnsureSuccessStatusCode()</c> descarta esse corpo, então um 401 com
+    /// <c>{"error":"token inválido"}</c> virava só "401 Unauthorized" no log, sem o motivo real.
+    /// Preserva o <see cref="HttpStatusCode"/> na exceção (não só no texto), para quem capturar
+    /// poder distinguir "não adianta tentar de novo" (401/403) de uma falha transitória -- ver
+    /// <see cref="DeveTentarNovamenteAposFalha"/>.
+    /// </summary>
+    private static async Task GarantirSucessoComCorpoAsync(HttpResponseMessage response)
+    {
+        if (response.IsSuccessStatusCode) return;
+        string corpo = await response.Content.ReadAsStringAsync();
+        throw new HttpRequestException(
+            $"Erro {(int)response.StatusCode} ({response.StatusCode}) da API: {(string.IsNullOrWhiteSpace(corpo) ? "(sem corpo na resposta)" : corpo)}",
+            inner: null,
+            statusCode: response.StatusCode
+        );
     }
 
     /// <summary>Baixa os pacotes de uma versão, valida o SHA-256 de cada um e devolve os
@@ -60,6 +113,7 @@ public class ApiService
                 throw new InvalidOperationException($"Nome de pacote inválido: {pkg.File}");
             string filePath = Path.Combine(destinationPath, fileName);
             string downloadUrl = Uri.TryCreate(pkg.Url, UriKind.Absolute, out _) ? pkg.Url : $"{_baseUrl}/{pkg.Url.TrimStart('/')}";
+            _logger.LogInformation("Baixando pacote {Arquivo}.", fileName);
             await BaixarArquivoAutenticadoAsync(downloadUrl, filePath, cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(pkg.Sha256))
@@ -69,6 +123,7 @@ public class ApiService
                 if (!hash.Equals(pkg.Sha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException($"Hash SHA-256 inválido para {fileName}.");
             }
+            _logger.LogInformation("Pacote {Arquivo} baixado e com hash conferido ({Bytes} bytes).", fileName, new FileInfo(filePath).Length);
             caminhos.Add(filePath);
         }
         return caminhos;
@@ -76,13 +131,43 @@ public class ApiService
 
     private async Task BaixarArquivoAutenticadoAsync(string downloadUrl, string filePath, CancellationToken cancellationToken = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
-        request.Headers.Add("X-Agent-Token", _agentToken);
-        var response = await _httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        for (int tentativa = 1; ; tentativa++)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+                request.Headers.Add("X-Agent-Token", _agentToken);
+                var response = await _httpClient.SendAsync(request, cancellationToken);
+                await GarantirSucessoComCorpoAsync(response);
 
-        using var fs = new FileStream(filePath, FileMode.Create);
-        await response.Content.CopyToAsync(fs, cancellationToken);
+                using var fs = new FileStream(filePath, FileMode.Create);
+                await response.Content.CopyToAsync(fs, cancellationToken);
+                return;
+            }
+            catch (Exception ex) when (tentativa < TentativasDownload && DeveTentarNovamenteAposFalha(ex, cancellationToken))
+            {
+                TimeSpan atraso = AtrasosRetryDownload[Math.Min(tentativa, AtrasosRetryDownload.Length) - 1];
+                _logger.LogWarning(ex, "Falha ao baixar {Arquivo} (tentativa {Tentativa}/{Total}). Tentando de novo em {Atraso}.", Path.GetFileName(filePath), tentativa, TentativasDownload, atraso);
+                await Task.Delay(atraso, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decide se vale a pena tentar o download de novo. Erro de autenticação (401/403) não se
+    /// resolve tentando de novo -- é um problema de configuração (token errado/expirado), não uma
+    /// falha de rede transitória, e insistir só atrasaria o backoff de verdade que o Worker
+    /// precisa aplicar. Cancelamento explícito (serviço sendo parado) também não deve virar
+    /// retry -- ver o `cancellationToken.ThrowIfCancellationRequested` implícito no
+    /// `Task.Delay`/`SendAsync` acima, que já propaga `OperationCanceledException` nesse caso.
+    /// </summary>
+    private static bool DeveTentarNovamenteAposFalha(Exception ex, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return false;
+        if (ex is OperationCanceledException) return false;
+        if (ex is HttpRequestException http && (http.StatusCode == System.Net.HttpStatusCode.Unauthorized || http.StatusCode == System.Net.HttpStatusCode.Forbidden))
+            return false;
+        return true;
     }
 
     // Nome da máquina lido uma vez só (não muda durante a vida do processo) -- é o que o painel
@@ -103,7 +188,7 @@ public class ApiService
     /// opcionais -- ficam nulos nos logs de falha de script individual (ScriptRunnerService), que
     /// reportam um problema no MEIO do processo, não a transição de versão completa.
     /// </summary>
-    public async Task SendLog(string codigoCliente, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null)
+    public async Task SendLog(string codigoCliente, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -124,9 +209,22 @@ public class ApiService
             var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/update/log") { Content = content };
             request.Headers.Add("X-Agent-Token", _agentToken);
-            await _httpClient.SendAsync(request);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeoutChecagemELog);
+            var response = await _httpClient.SendAsync(request, timeoutCts.Token);
+            await GarantirSucessoComCorpoAsync(response);
         }
-        catch { /* Fire and forget */ }
+        catch (Exception ex)
+        {
+            // Fire and forget continua correto aqui -- reportar o resultado ao painel não pode
+            // derrubar um ciclo de atualização que já rodou de verdade localmente (o trabalho já
+            // foi feito; só o AVISO ao servidor central que falhou). O que mudou é o silêncio
+            // total: antes um `catch {}` vazio não deixava rastro nenhum, nem local -- um cliente
+            // com a API inacessível no momento do log tinha a atualização real registrada só no
+            // banco dele, sem nenhum sinal de que o painel central nunca soube.
+            _logger.LogWarning(ex, "Falha ao enviar log para a API (cliente {Cliente}, sistema {Sistema}, status {Status}).", codigoCliente, sistema, status);
+        }
     }
 }
 
