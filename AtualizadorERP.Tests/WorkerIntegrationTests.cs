@@ -15,6 +15,8 @@ namespace AtualizadorERP.Tests;
 /// </summary>
 public class WorkerIntegrationTests
 {
+    private const string Sistema = "SISTEMA_TESTE";
+
     private static string NovaPastaPacotes(string pastaTrabalho)
     {
         string pastaPacotes = Path.Combine(pastaTrabalho, "pacotes");
@@ -51,10 +53,10 @@ public class WorkerIntegrationTests
 
             var worker = NovoWorker(junior.CaminhoArquivo, bexe.CaminhoArquivo, pastaTrabalho, pastaBackups, out var databaseService);
 
-            await worker.ProcessarAtualizacao(CancellationToken.None);
+            await worker.ProcessarAtualizacao(Sistema, CancellationToken.None);
 
-            Assert.Equal("CONCLUIDO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
-            Assert.Equal("9.9.9", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
+            Assert.Equal("CONCLUIDO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+            Assert.Equal("9.9.9", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
             Assert.Contains("Cria_tabela_teste.sql", databaseService.GetScriptsAplicados(junior.CaminhoArquivo));
             Assert.True(databaseService.VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_CICLO_COMPLETO (ID INTEGER)").JaExiste);
 
@@ -163,10 +165,10 @@ public class WorkerIntegrationTests
             var worker = NovoWorker(junior.CaminhoArquivo, bexe.CaminhoArquivo, pastaTrabalho, pastaBackups, out var databaseService);
 
             // Não relança -- o catch de ProcessarAtualizacao trata a falha e grava ERRO.
-            await worker.ProcessarAtualizacao(CancellationToken.None);
+            await worker.ProcessarAtualizacao(Sistema, CancellationToken.None);
 
-            Assert.Equal("ERRO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
-            Assert.Equal("1.0.0", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo), ignoreCase: true);
+            Assert.Equal("ERRO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+            Assert.Equal("1.0.0", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema), ignoreCase: true);
 
             // O gbak -c -replace_database restaurou o banco pro estado do backup pré-atualização --
             // de antes dos scripts rodarem. Se a tabela existisse aqui, o rollback não teria

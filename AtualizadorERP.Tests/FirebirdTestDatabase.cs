@@ -28,21 +28,24 @@ public sealed class FirebirdTestDatabase : IDisposable
     /// <summary>Schema mínimo assumido de um JUNIOR.fdb -- ver RISCOS-CONHECIDOS.md ("Schema do
     /// JUNIOR.fdb -- parcialmente confirmado"): SYS_ATUALIZACAO não existe no schema real (o
     /// próprio agente cria via DatabaseService.GarantirTabelaSysAtualizacao -- ver
-    /// CriarJuniorSemSysAtualizacao para testar esse caminho), SCRIPTS foi confirmada.</summary>
-    public static FirebirdTestDatabase CriarJunior(string status = "AUTORIZADO", string versaoAtual = "1.0.0", string versaoNova = "1.0.0")
+    /// CriarJuniorSemSysAtualizacao para testar esse caminho), SCRIPTS foi confirmada.
+    ///
+    /// SISTEMA como chave (não ID=1 fixo): uma instância do agente cuida de vários sistemas
+    /// (ConfiguracaoAgente.Sistemas), cada um com sua própria linha -- ver Worker.cs.</summary>
+    public static FirebirdTestDatabase CriarJunior(string sistema = "SISTEMA_TESTE", string status = "AUTORIZADO", string versaoAtual = "1.0.0", string versaoNova = "1.0.0")
     {
         var db = CriarJuniorSemSysAtualizacao();
         db.ExecutarNaoConsulta(@"
             CREATE TABLE SYS_ATUALIZACAO (
-                ID INTEGER NOT NULL PRIMARY KEY,
+                SISTEMA VARCHAR(50) NOT NULL PRIMARY KEY,
                 STATUS VARCHAR(20),
                 VERSAO_NOVA VARCHAR(50),
                 VERSAO_ATUAL VARCHAR(50),
                 MENSAGEM_LOG VARCHAR(500)
             )");
         db.ExecutarNaoConsulta(
-            "INSERT INTO SYS_ATUALIZACAO (ID, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (1, @status, @versaoNova, @versaoAtual)",
-            ("@status", status), ("@versaoNova", versaoNova), ("@versaoAtual", versaoAtual));
+            "INSERT INTO SYS_ATUALIZACAO (SISTEMA, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (@sistema, @status, @versaoNova, @versaoAtual)",
+            ("@sistema", sistema), ("@status", status), ("@versaoNova", versaoNova), ("@versaoAtual", versaoAtual));
         return db;
     }
 

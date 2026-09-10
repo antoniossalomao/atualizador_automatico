@@ -171,7 +171,7 @@ máquina que roda mais de um sistema precisa de uma instância do serviço por
 sistema (pasta + `atualizador.ini` próprios), cada uma com seu próprio
 `SISTEMA`. Sem essa chave, o agente não consegue nem consultar se há
 atualização — o servidor recusa a chamada (ver
-`web/docs/REVISAO_INTERFACE.md`, seção "Contrato do agente").
+`web/docs/DOCUMENTACAO_CONSOLIDADA.md`, seção "Contrato do agente (Worker C#)").
 
 > A porta `3050` é o padrão do Firebird, mas ambientes reais usam outras — um
 > `BScript.Ini` de produção inspecionado usava `3051`. Confira antes.

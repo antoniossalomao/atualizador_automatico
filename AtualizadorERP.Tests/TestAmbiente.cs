@@ -16,19 +16,28 @@ public static class TestAmbiente
 
     public static ConfiguracaoAgente Config { get; } = NovaConfiguracao();
 
+    // Só é consultado por Worker.ExecuteAsync/EhSistemaComScript (o roteamento por sistema) --
+    // os testes de DatabaseService/ScriptRunnerService/WorkerIntegrationTests chamam os métodos
+    // com "sistema" explícito por parâmetro, sem passar por essa lista, então o valor aqui não
+    // muda o comportamento deles. Mantido só pra ConfiguracaoAgente poder ser construído.
+    private static readonly SistemaConfigurado[] SistemaPadrao = { new("SISTEMA_TESTE", "sistema_teste.exe") };
+
     public static ConfiguracaoAgente NovaConfiguracao(
         string? juniorFdbPath = null,
         string? bexeFdbPath = null,
         string? pastaTrabalho = null,
         string? pastaBackups = null,
-        int backupsParaManter = 10)
+        int backupsParaManter = 10,
+        IReadOnlyList<SistemaConfigurado>? sistemas = null,
+        IReadOnlyList<string>? sistemasComScript = null)
     {
         string trabalho = pastaTrabalho ?? Directory.CreateTempSubdirectory("atualizador_trabalho_").FullName;
         string backups = pastaBackups ?? Directory.CreateTempSubdirectory("atualizador_backups_").FullName;
 
         return new ConfiguracaoAgente(
             codigoCliente: "00000000000000",
-            sistema: "SISTEMA_TESTE",
+            sistemas: sistemas ?? SistemaPadrao,
+            sistemasComScript: sistemasComScript ?? Array.Empty<string>(),
             apiUrl: "http://localhost:59999/api-inexistente",
             apiToken: "token-de-teste",
             dbUser: FirebirdTestDatabase.Usuario,

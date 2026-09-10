@@ -33,48 +33,64 @@ public class DatabaseService
     }
 
     /// <summary>
-    /// Cria a tabela SYS_ATUALIZACAO em JUNIOR.fdb se ela ainda não existir. Confirmado contra uma
-    /// cópia real de produção (366 tabelas) que o schema não a tem -- ver RISCOS-CONHECIDOS.md,
-    /// "Schema do JUNIOR.fdb". Em vez de depender de um DBA rodar essa DDL manualmente em cada
-    /// cliente antes da primeira instalação do agente, o próprio Worker garante o schema no
-    /// arranque: idempotente (checa RDB$RELATIONS antes de criar), então rodar de novo num cliente
-    /// que já tem a tabela é um no-op. A linha ID=1 inicial nasce em CONCLUIDO -- mesmo estado que
-    /// GetStatusAtualizacao já assume como padrão quando a tabela nem existia.
+    /// Cria a tabela SYS_ATUALIZACAO em JUNIOR.fdb se ela ainda não existir, e garante uma linha
+    /// por sistema de <paramref name="sistemas"/> -- não uma linha fixa ID=1. Confirmado contra uma
+    /// cópia real de produção (366 tabelas) que o schema não tem essa tabela -- ver
+    /// RISCOS-CONHECIDOS.md, "Schema do JUNIOR.fdb". Em vez de depender de um DBA rodar essa DDL
+    /// manualmente em cada cliente antes da primeira instalação do agente, o próprio Worker garante
+    /// o schema no arranque: idempotente (checa RDB$RELATIONS antes de criar a tabela, e cada
+    /// sistema individualmente antes de inserir a linha dele), então rodar de novo num cliente que
+    /// já tem tudo é um no-op -- inclusive adicionar um sistema novo à lista mais tarde só insere a
+    /// linha que falta, sem mexer no que já existe.
+    ///
+    /// SISTEMA virou parte da chave (era ID=1 fixo) porque, na prática, um cliente tem um
+    /// JUNIOR.fdb/BEXE.fdb só servindo vários produtos (confirmado: um BEXE.fdb real tinha três
+    /// produtos na mesma EXECUTAVEIS) -- instâncias separadas do agente por sistema, cada uma
+    /// achando que é dona da linha ID=1, se pisariam durante um gfix -shut/gbak de qualquer uma
+    /// delas.
     /// </summary>
-    public void GarantirTabelaSysAtualizacao(string dbPath)
+    public void GarantirTabelaSysAtualizacao(string dbPath, IEnumerable<string> sistemas)
     {
-        if (ExisteRegistroSistema(dbPath, "RDB$RELATIONS", "RDB$RELATION_NAME", "SYS_ATUALIZACAO")) return;
-
         using var conn = new FbConnection(GetConnectionString(dbPath));
         conn.Open();
 
-        // VERSAO_NOVA/VERSAO_ATUAL em VARCHAR(50): essa tabela não existe na base real (é este
-        // projeto que a cria, ver RISCOS-CONHECIDOS.md), então não há schema legado a respeitar
-        // aqui -- só uma margem confortável para o formato de versão do painel (ex.
-        // "2026.08.27"), sem risco de truncar no futuro.
-        using (var cmdCreate = new FbCommand(@"
-            CREATE TABLE SYS_ATUALIZACAO (
-                ID INTEGER NOT NULL PRIMARY KEY,
-                STATUS VARCHAR(20),
-                VERSAO_NOVA VARCHAR(50),
-                VERSAO_ATUAL VARCHAR(50),
-                MENSAGEM_LOG VARCHAR(500)
-            )", conn))
+        if (!ExisteRegistroSistema(dbPath, "RDB$RELATIONS", "RDB$RELATION_NAME", "SYS_ATUALIZACAO"))
         {
+            // VERSAO_NOVA/VERSAO_ATUAL em VARCHAR(50): essa tabela não existe na base real (é este
+            // projeto que a cria, ver RISCOS-CONHECIDOS.md), então não há schema legado a respeitar
+            // aqui -- só uma margem confortável para o formato de versão do painel (ex.
+            // "2026.08.27"), sem risco de truncar no futuro.
+            using var cmdCreate = new FbCommand(@"
+                CREATE TABLE SYS_ATUALIZACAO (
+                    SISTEMA VARCHAR(50) NOT NULL PRIMARY KEY,
+                    STATUS VARCHAR(20),
+                    VERSAO_NOVA VARCHAR(50),
+                    VERSAO_ATUAL VARCHAR(50),
+                    MENSAGEM_LOG VARCHAR(500)
+                )", conn);
             cmdCreate.ExecuteNonQuery();
         }
 
-        using var cmdInsert = new FbCommand(
-            "INSERT INTO SYS_ATUALIZACAO (ID, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (1, 'CONCLUIDO', '0.0.0', '0.0.0')",
-            conn);
-        cmdInsert.ExecuteNonQuery();
+        foreach (var sistema in sistemas)
+        {
+            using var cmdExiste = new FbCommand("SELECT 1 FROM SYS_ATUALIZACAO WHERE SISTEMA = @sistema", conn);
+            cmdExiste.Parameters.AddWithValue("@sistema", sistema);
+            if (cmdExiste.ExecuteScalar() != null) continue;
+
+            using var cmdInsert = new FbCommand(
+                "INSERT INTO SYS_ATUALIZACAO (SISTEMA, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (@sistema, 'CONCLUIDO', '0.0.0', '0.0.0')",
+                conn);
+            cmdInsert.Parameters.AddWithValue("@sistema", sistema);
+            cmdInsert.ExecuteNonQuery();
+        }
     }
 
-    public string GetStatusAtualizacao(string dbPath)
+    public string GetStatusAtualizacao(string dbPath, string sistema)
     {
         using var conn = new FbConnection(GetConnectionString(dbPath));
         conn.Open();
-        using var cmd = new FbCommand("SELECT STATUS FROM SYS_ATUALIZACAO WHERE ID = 1", conn);
+        using var cmd = new FbCommand("SELECT STATUS FROM SYS_ATUALIZACAO WHERE SISTEMA = @sistema", conn);
+        cmd.Parameters.AddWithValue("@sistema", sistema);
         var result = cmd.ExecuteScalar();
         return result?.ToString() ?? "CONCLUIDO";
     }
@@ -85,11 +101,12 @@ public class DatabaseService
     /// binários recém-aplicados. Não é "a versão que o cliente está rodando agora" -- pra isso,
     /// ver GetVersaoConfirmada.
     /// </summary>
-    public string GetVersaoAtual(string dbPath)
+    public string GetVersaoAtual(string dbPath, string sistema)
     {
         using var conn = new FbConnection(GetConnectionString(dbPath));
         conn.Open();
-        using var cmd = new FbCommand("SELECT VERSAO_NOVA FROM SYS_ATUALIZACAO WHERE ID = 1", conn);
+        using var cmd = new FbCommand("SELECT VERSAO_NOVA FROM SYS_ATUALIZACAO WHERE SISTEMA = @sistema", conn);
+        cmd.Parameters.AddWithValue("@sistema", sistema);
         var result = cmd.ExecuteScalar();
         return result?.ToString() ?? "0.0.0";
     }
@@ -103,20 +120,22 @@ public class DatabaseService
     /// ela nunca chegou a mudar. Coluna nova, adicionada em cima do schema já assumido (não
     /// confirmado) de SYS_ATUALIZACAO -- ver RISCOS-CONHECIDOS.md.
     /// </summary>
-    public string GetVersaoConfirmada(string dbPath)
+    public string GetVersaoConfirmada(string dbPath, string sistema)
     {
         using var conn = new FbConnection(GetConnectionString(dbPath));
         conn.Open();
-        using var cmd = new FbCommand("SELECT VERSAO_ATUAL FROM SYS_ATUALIZACAO WHERE ID = 1", conn);
+        using var cmd = new FbCommand("SELECT VERSAO_ATUAL FROM SYS_ATUALIZACAO WHERE SISTEMA = @sistema", conn);
+        cmd.Parameters.AddWithValue("@sistema", sistema);
         var result = cmd.ExecuteScalar();
         return result?.ToString() ?? "0.0.0";
     }
 
-    public void ConfirmarVersaoAtual(string dbPath)
+    public void ConfirmarVersaoAtual(string dbPath, string sistema)
     {
         using var conn = new FbConnection(GetConnectionString(dbPath));
         conn.Open();
-        using var cmd = new FbCommand("UPDATE SYS_ATUALIZACAO SET VERSAO_ATUAL = VERSAO_NOVA WHERE ID = 1", conn);
+        using var cmd = new FbCommand("UPDATE SYS_ATUALIZACAO SET VERSAO_ATUAL = VERSAO_NOVA WHERE SISTEMA = @sistema", conn);
+        cmd.Parameters.AddWithValue("@sistema", sistema);
         cmd.ExecuteNonQuery();
     }
 
@@ -125,7 +144,7 @@ public class DatabaseService
     /// Sem isso, se o servidor do cliente perder acesso à internet no momento de uma falha, não
     /// sobra nenhum rastro local do que aconteceu -- o único log ficava só na API central.
     /// </summary>
-    public void SetStatusAtualizacao(string dbPath, string status, string? versaoNova, string? mensagem = null)
+    public void SetStatusAtualizacao(string dbPath, string sistema, string status, string? versaoNova, string? mensagem = null)
     {
         using var conn = new FbConnection(GetConnectionString(dbPath));
         conn.Open();
@@ -133,12 +152,13 @@ public class DatabaseService
         var sets = new List<string> { "STATUS = @status" };
         if (versaoNova != null) sets.Add("VERSAO_NOVA = @versao");
         if (mensagem != null) sets.Add("MENSAGEM_LOG = @mensagem");
-        string sql = $"UPDATE SYS_ATUALIZACAO SET {string.Join(", ", sets)} WHERE ID = 1";
+        string sql = $"UPDATE SYS_ATUALIZACAO SET {string.Join(", ", sets)} WHERE SISTEMA = @sistema";
 
         using var cmd = new FbCommand(sql, conn);
         cmd.Parameters.AddWithValue("@status", status);
         if (versaoNova != null) cmd.Parameters.AddWithValue("@versao", versaoNova);
         if (mensagem != null) cmd.Parameters.AddWithValue("@mensagem", mensagem.Length > 500 ? mensagem[..500] : mensagem);
+        cmd.Parameters.AddWithValue("@sistema", sistema);
 
         cmd.ExecuteNonQuery();
     }

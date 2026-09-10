@@ -11,24 +11,26 @@ namespace AtualizadorERP.Tests;
 /// </summary>
 public class DatabaseServiceTests
 {
+    private const string Sistema = "SISTEMA_TESTE";
+
     private readonly DatabaseService _databaseService = new(TestAmbiente.Config);
 
     [Fact]
     public void GetStatusAtualizacao_le_o_status_gravado()
     {
         using var junior = FirebirdTestDatabase.CriarJunior(status: "PENDENTE");
-        Assert.Equal("PENDENTE", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
+        Assert.Equal("PENDENTE", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
     }
 
     [Fact]
     public void SetStatusAtualizacao_atualiza_status_versao_e_mensagem()
     {
         using var junior = FirebirdTestDatabase.CriarJunior();
-        _databaseService.SetStatusAtualizacao(junior.CaminhoArquivo, "ERRO", "2.0.0", "mensagem de teste");
+        _databaseService.SetStatusAtualizacao(junior.CaminhoArquivo, Sistema, "ERRO", "2.0.0", "mensagem de teste");
 
-        Assert.Equal("ERRO", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
-        Assert.Equal("2.0.0", _databaseService.GetVersaoAtual(junior.CaminhoArquivo));
-        Assert.Equal("mensagem de teste", junior.ExecutarEscalar("SELECT MENSAGEM_LOG FROM SYS_ATUALIZACAO WHERE ID = 1"));
+        Assert.Equal("ERRO", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+        Assert.Equal("2.0.0", _databaseService.GetVersaoAtual(junior.CaminhoArquivo, Sistema));
+        Assert.Equal("mensagem de teste", junior.ExecutarEscalar($"SELECT MENSAGEM_LOG FROM SYS_ATUALIZACAO WHERE SISTEMA = '{Sistema}'"));
     }
 
     [Fact]
@@ -37,9 +39,9 @@ public class DatabaseServiceTests
         using var junior = FirebirdTestDatabase.CriarJunior();
         string mensagemGigante = new string('x', 800);
 
-        _databaseService.SetStatusAtualizacao(junior.CaminhoArquivo, "ERRO", null, mensagemGigante);
+        _databaseService.SetStatusAtualizacao(junior.CaminhoArquivo, Sistema, "ERRO", null, mensagemGigante);
 
-        var gravado = (string)junior.ExecutarEscalar("SELECT MENSAGEM_LOG FROM SYS_ATUALIZACAO WHERE ID = 1")!;
+        var gravado = (string)junior.ExecutarEscalar($"SELECT MENSAGEM_LOG FROM SYS_ATUALIZACAO WHERE SISTEMA = '{Sistema}'")!;
         Assert.Equal(500, gravado.TrimEnd().Length);
     }
 
@@ -47,15 +49,15 @@ public class DatabaseServiceTests
     public void ConfirmarVersaoAtual_so_avanca_apos_chamada_explicita()
     {
         using var junior = FirebirdTestDatabase.CriarJunior(versaoAtual: "1.0.0", versaoNova: "1.0.0");
-        _databaseService.SetStatusAtualizacao(junior.CaminhoArquivo, "PROCESSANDO", "9.9.9");
+        _databaseService.SetStatusAtualizacao(junior.CaminhoArquivo, Sistema, "PROCESSANDO", "9.9.9");
 
         // Antes de confirmar: VERSAO_ATUAL não mudou, mesmo com VERSAO_NOVA já apontando pra
         // frente -- é exatamente essa separação que substitui o antigo versao_anterior.txt
         // (item 6 do RISCOS-CONHECIDOS.md).
-        Assert.Equal("1.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
+        Assert.Equal("1.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
 
-        _databaseService.ConfirmarVersaoAtual(junior.CaminhoArquivo);
-        Assert.Equal("9.9.9", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
+        _databaseService.ConfirmarVersaoAtual(junior.CaminhoArquivo, Sistema);
+        Assert.Equal("9.9.9", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
     }
 
     [Fact]
@@ -162,10 +164,10 @@ public class DatabaseServiceTests
     {
         using var junior = FirebirdTestDatabase.CriarJuniorSemSysAtualizacao();
 
-        _databaseService.GarantirTabelaSysAtualizacao(junior.CaminhoArquivo);
+        _databaseService.GarantirTabelaSysAtualizacao(junior.CaminhoArquivo, new[] { Sistema });
 
-        Assert.Equal("CONCLUIDO", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
-        Assert.Equal("0.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
+        Assert.Equal("CONCLUIDO", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+        Assert.Equal("0.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
     }
 
     [Fact]
@@ -173,10 +175,10 @@ public class DatabaseServiceTests
     {
         using var junior = FirebirdTestDatabase.CriarJunior(status: "PENDENTE", versaoAtual: "3.0.0", versaoNova: "4.0.0");
 
-        _databaseService.GarantirTabelaSysAtualizacao(junior.CaminhoArquivo);
+        _databaseService.GarantirTabelaSysAtualizacao(junior.CaminhoArquivo, new[] { Sistema });
 
-        Assert.Equal("PENDENTE", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo));
-        Assert.Equal("3.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo));
+        Assert.Equal("PENDENTE", _databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+        Assert.Equal("3.0.0", _databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
     }
 
     [Fact]

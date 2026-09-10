@@ -1,5 +1,11 @@
 namespace AtualizadorERP.Services;
 
+/// <summary>Um sistema que este agente pode cuidar, e o nome do executável que identifica se o
+/// cliente atual realmente tem esse sistema instalado (ex.: Nome="B_NFe", NomeExeEsperado=
+/// "B_NFE.exe" -- o nome do sistema no painel e o nome do arquivo real não batem sempre, então
+/// não dá pra inferir um a partir do outro).</summary>
+public sealed record SistemaConfigurado(string Nome, string NomeExeEsperado);
+
 /// <summary>
 /// Lê "atualizador.ini" ao lado do executável publicado. Substitui as variáveis de ambiente
 /// usadas antes: setar variável de ambiente de um serviço Windows exige elevar e editar o
@@ -16,7 +22,28 @@ namespace AtualizadorERP.Services;
 public class ConfiguracaoAgente
 {
     public string CodigoCliente { get; }
-    public string Sistema { get; }
+
+    /// <summary>Todos os sistemas que ESTA INSTALAÇÃO DO AGENTE conhece (não necessariamente os
+    /// que este cliente tem) -- uma instância só, não uma por sistema: na prática, um cliente tem
+    /// um JUNIOR.fdb/BEXE.fdb só servindo vários produtos (confirmado abrindo um BEXE.fdb real com
+    /// três produtos na mesma tabela EXECUTAVEIS), então instâncias separadas por sistema
+    /// brigariam pela mesma linha de SYS_ATUALIZACAO e pelos mesmos gfix/gbak no mesmo banco.
+    ///
+    /// O Worker filtra essa lista a cada ciclo, checando qual <see cref="SistemaConfigurado.NomeExeEsperado"/>
+    /// realmente existe na pasta do cliente -- só baixa/aplica atualização dos sistemas que esse
+    /// cliente específico tem instalado. Sem esse filtro, publicar uma versão nova de QUALQUER
+    /// sistema faria TODO cliente (mesmo os que nunca tiveram aquele sistema) tentar baixá-la.</summary>
+    public IReadOnlyList<SistemaConfigurado> Sistemas { get; }
+
+    /// <summary>Quais sistemas de <see cref="Sistemas"/> têm permissão de rodar script contra o
+    /// JUNIOR.fdb (Fase 2/3 completa: espera AUTORIZADO, gfix -shut, backup, ScriptRunnerService).
+    /// Todo o resto de Sistemas é tratado como "só troca de executável": nunca passa pelo
+    /// ScriptRunnerService, mesmo que o pacote baixado contenha .sql -- confirmado que alguns
+    /// pacotes (ex.: BImportaXML) trazem .sql junto por herança de empacotamento, mas rodá-los
+    /// quebra o banco. Não dá pra inferir "precisa de script" pelo conteúdo do pacote; só uma lista
+    /// explícita e deliberada é segura aqui.</summary>
+    public IReadOnlyList<string> SistemasComScript { get; }
+
     public string ApiUrl { get; }
     public string ApiToken { get; }
     public string DbUser { get; }
@@ -51,14 +78,17 @@ public class ConfiguracaoAgente
         if (!File.Exists(caminhoIni))
             throw new InvalidOperationException(
                 $"Arquivo de configuração não encontrado: {caminhoIni} -- crie um '{NomeArquivoPadrao}' ao lado do " +
-                "executável (comece copiando atualizador.ini.example) com pelo menos CODIGO_CLIENTE, SISTEMA, " +
+                "executável (comece copiando atualizador.ini.example) com pelo menos CODIGO_CLIENTE, SISTEMAS, " +
                 "API_TOKEN e DB_PASSWORD preenchidos. Ver README.md.");
 
         var valores = LerIni(caminhoIni);
         string pastaAgente = Path.GetDirectoryName(Path.GetFullPath(caminhoIni))!;
 
         CodigoCliente = Obrigatorio(valores, "CODIGO_CLIENTE", caminhoIni);
-        Sistema = Obrigatorio(valores, "SISTEMA", caminhoIni);
+        Sistemas = ListaDeSistemas(valores, "SISTEMAS", caminhoIni);
+        // Opcional, default vazio: um cliente que só distribui .exe (nenhum sistema com script)
+        // não precisa preencher isso.
+        SistemasComScript = ListaOpcional(valores, "SISTEMAS_COM_SCRIPT");
         ApiToken = Obrigatorio(valores, "API_TOKEN", caminhoIni);
         DbPassword = Obrigatorio(valores, "DB_PASSWORD", caminhoIni);
 
@@ -81,14 +111,15 @@ public class ConfiguracaoAgente
     // disco e precisam de um JUNIOR/BEXE/pasta de trabalho próprios por teste (bancos Firebird
     // descartáveis, um por teste) -- ver AtualizadorERP.Tests/TestAmbiente.cs.
     internal ConfiguracaoAgente(
-        string codigoCliente, string sistema, string apiUrl, string apiToken,
+        string codigoCliente, IReadOnlyList<SistemaConfigurado> sistemas, IReadOnlyList<string> sistemasComScript, string apiUrl, string apiToken,
         string dbUser, string dbPassword, string dbPort,
         string juniorFdbPath, string bexeFdbPath,
         string gfixPath, string gbakPath, string isqlPath,
         string pastaTrabalho, string pastaBackups, int backupsParaManter)
     {
         CodigoCliente = codigoCliente;
-        Sistema = sistema;
+        Sistemas = sistemas;
+        SistemasComScript = sistemasComScript;
         ApiUrl = apiUrl;
         ApiToken = apiToken;
         DbUser = dbUser;
@@ -109,6 +140,37 @@ public class ConfiguracaoAgente
         if (!valores.TryGetValue(chave, out var valor) || string.IsNullOrWhiteSpace(valor))
             throw new InvalidOperationException($"Defina {chave} em {caminhoIni} antes de iniciar o agente.");
         return valor;
+    }
+
+    // "B_Vendas:B_Vendas.exe,B_NFe:B_NFE.exe" -> [(B_Vendas, B_Vendas.exe), (B_NFe, B_NFE.exe)] --
+    // vírgula separa sistemas, dois-pontos separa nome do sistema do nome do exe esperado. Par
+    // completo (não só o nome do sistema) porque o nome cadastrado no painel e o nome do arquivo
+    // real quase nunca batem (ex.: sistema "B_Importa", arquivo "BImportaXML.exe").
+    private static IReadOnlyList<SistemaConfigurado> ListaDeSistemas(Dictionary<string, string> valores, string chave, string caminhoIni)
+    {
+        string bruto = Obrigatorio(valores, chave, caminhoIni);
+        var itens = bruto.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (itens.Length == 0)
+            throw new InvalidOperationException($"Defina {chave} em {caminhoIni} antes de iniciar o agente.");
+
+        var resultado = new List<SistemaConfigurado>();
+        foreach (var item in itens)
+        {
+            int separador = item.IndexOf(':');
+            if (separador <= 0 || separador == item.Length - 1)
+                throw new InvalidOperationException(
+                    $"Entrada inválida em {chave} ({caminhoIni}): '{item}' -- esperado 'NomeDoSistema:NomeDoExecutavel.exe' " +
+                    "(ex.: 'B_Vendas:B_Vendas.exe'). Ver atualizador.ini.example.");
+            resultado.Add(new SistemaConfigurado(item[..separador].Trim(), item[(separador + 1)..].Trim()));
+        }
+        return resultado;
+    }
+
+    private static IReadOnlyList<string> ListaOpcional(Dictionary<string, string> valores, string chave)
+    {
+        if (!valores.TryGetValue(chave, out var bruto) || string.IsNullOrWhiteSpace(bruto))
+            return Array.Empty<string>();
+        return bruto.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
     }
 
     private static string ComDefault(Dictionary<string, string> valores, string chave, string padrao)

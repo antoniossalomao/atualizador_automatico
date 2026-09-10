@@ -19,10 +19,27 @@
 ; funciona igual, so' aparece o valor cru em vez do nome da empresa.
 CODIGO_CLIENTE=
 
-; Precisa bater, letra por letra, com o nome de um sistema cadastrado na aba Sistemas do painel
-; web (ex.: B_Vendas, B_NFe, B_Ordem). Uma maquina que roda mais de um sistema precisa de uma
-; instalacao do agente (pasta + atualizador.ini) por sistema.
-SISTEMA=
+; Lista de TODOS os sistemas que a empresa distribui, cada um como "NomeNoPainel:nome_do_exe.exe"
+; separado por virgula. NomeNoPainel precisa bater, letra por letra, com o nome cadastrado na aba
+; Sistemas do painel web -- mas o nome do arquivo .exe raramente bate com o nome do sistema (ex.:
+; sistema "B_Importa", arquivo real "BImportaXML.exe"), entao precisa informar os dois.
+;
+; Pode (e deve) copiar essa MESMA lista completa em todo cliente -- o agente checa sozinho, a cada
+; ciclo, quais desses .exe realmente existem na pasta do cliente (ao lado do BEXE.fdb) e SO baixa/
+; aplica atualizacao dos sistemas que esse cliente especifico tem instalado. Sem esse filtro,
+; publicar uma versao nova de QUALQUER sistema faria todo cliente tentar baixa-la, mesmo quem nunca
+; teve aquele sistema instalado.
+; Ex.: SISTEMAS=B_Vendas:B_Vendas.exe,B_NFe:B_NFE.exe,B_Ordem:B_Ordem_Servico.exe,B_Importa:BImportaXML.exe
+SISTEMAS=
+
+; Opcional (default vazio). Lista separada por virgula de QUAIS sistemas de SISTEMAS podem rodar
+; script contra o JUNIOR.fdb (gfix -shut, backup, aplicar .sql). Todo sistema que NAO estiver
+; aqui e' tratado como "so troca de executavel": nunca roda script, MESMO que o pacote baixado
+; contenha .sql (alguns pacotes trazem .sql junto sem ser pra rodar -- rodar por engano quebra o
+; banco). Nao deixe isso vazio pensando que o agente vai descobrir sozinho pelo conteudo do
+; pacote -- ele nao descobre, e' de proposito.
+; Ex.: SISTEMAS_COM_SCRIPT=B_Vendas
+SISTEMAS_COM_SCRIPT=
 
 ; Precisa bater com o AGENT_API_TOKEN configurado no servidor (web/server/.env).
 API_TOKEN=
