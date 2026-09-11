@@ -380,7 +380,7 @@ A chave `CNPJ` original virou `CODIGO_CLIENTE` (03/09/2026): o campo nunca foi
 uma CNPJ de verdade — nem a API nem o banco do servidor validam formato, e o
 que o painel de fato casa (`VersaoRepository.logs`, removendo pontuação dos
 dois lados) é contra `clientes.codigo`, que na base real é um código interno
-tipo `C016058`, não um CNPJ. O nome antigo já causava confusão sobre o que
+tipo `C012345`, não um CNPJ. O nome antigo já causava confusão sobre o que
 preencher ali. O contrato de rede não mudou — o agente continua mandando esse
 valor no parâmetro `cnpj` da API/log, só o nome do lado do agente ficou
 condizente com o que o valor realmente é.

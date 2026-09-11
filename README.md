@@ -156,7 +156,7 @@ dois que fica versionado.
 `CODIGO_CLIENTE` não precisa ser uma CNPJ de verdade — é só um identificador
 livre (a API/banco do servidor chamam esse campo de "cnpj" por herança
 histórica do projeto, mas nunca validam formato). Recomendado usar o mesmo
-`codigo` já cadastrado na aba **Clientes** do painel (ex.: `C016058`): o
+`codigo` já cadastrado na aba **Clientes** do painel (ex.: `C012345`): o
 painel casa esse valor com o cliente automaticamente (removendo pontuação dos
 dois lados) e mostra nome/cidade nos logs; qualquer outro valor não-vazio
 também funciona, só aparece cru em vez do nome da empresa.
