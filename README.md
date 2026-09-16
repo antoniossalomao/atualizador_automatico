@@ -1,24 +1,29 @@
 # Agente Atualizador ERP
 
-Serviço Windows em C# / .NET 8 que automatiza a atualização do ERP no servidor
-do cliente: consulta uma API central, baixa e valida os pacotes da versão nova,
-espera a autorização do usuário (dada pelo próprio ERP em Delphi), isola o banco
-Firebird, aplica os scripts, distribui os executáveis novos e devolve o banco ao ar.
+Serviço Windows em C# / .NET 8 que automatiza a atualização dos sistemas do ERP
+no servidor do cliente. Uma única instância detecta quais produtos estão
+instalados, consulta uma API central e processa cada sistema separadamente. Para
+sistemas com scripts, espera a autorização do usuário (dada pelo próprio ERP em
+Delphi), isola o Firebird, aplica os scripts e distribui os executáveis. Para os
+demais, copia e distribui os arquivos sem interromper o banco.
 
 > **Estado: pré-piloto.** Compila, o fluxo principal está implementado, os bugs
 > críticos conhecidos foram corrigidos, o formato gravado em `BEXE.fdb` foi
 > confirmado campo a campo contra um arquivo real correto, e o ciclo completo
 > (Fase 1 → Fase 3 → Fase 4, com Fase 2 simulada) já rodou de ponta a ponta
 > várias vezes contra Firebird real -- ver [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md).
-> Ainda **não deve rodar em cliente real**: falta a Fase 2 (autorização pelo ERP
-> Delphi) e triagem dos scripts antigos que já foram aplicados fora do controle
-> da tabela `SCRIPTS`. Leia [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md) antes de
-> qualquer coisa -- é o documento mais importante deste repositório.
+> Ainda **não deve rodar em cliente real com sistemas que executam scripts**:
+> falta a Fase 2 (autorização pelo ERP Delphi) e a triagem dos scripts antigos
+> que já foram aplicados fora do controle da tabela `SCRIPTS`. Leia
+> [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md) antes de qualquer coisa -- é o
+> documento mais importante deste repositório.
 
 ## Como funciona
 
-O agente é um `BackgroundService` que faz polling e reage ao campo `STATUS` da
-tabela `SYS_ATUALIZACAO`, no `JUNIOR.fdb` do cliente.
+O agente é um `BackgroundService` que faz polling para cada sistema instalado e
+reage ao campo `STATUS` da linha correspondente na tabela `SYS_ATUALIZACAO`, no
+`JUNIOR.fdb` do cliente. A presença do executável configurado ao lado do
+`BEXE.fdb` determina se um sistema está instalado.
 
 | Estado | Significado | Quem grava |
 |---|---|---|
@@ -28,14 +33,17 @@ tabela `SYS_ATUALIZACAO`, no `JUNIOR.fdb` do cliente.
 | `PROCESSANDO` | Execução crítica em andamento | Agente |
 
 ### Fase 1 — Preparo invisível
-Consulta a API com o código do cliente e versão atual; se houver versão nova, baixa os pacotes,
-confere o **SHA-256** de cada um, extrai com o `7za.exe` e grava `PENDENTE`.
+Consulta a API com código do cliente, sistema e versão atual; se houver versão
+nova, baixa os pacotes, confere o **SHA-256** de cada um e extrai com o
+`7za.exe`. Sistemas listados em `SISTEMAS_COM_SCRIPT` passam para `PENDENTE`;
+os demais seguem direto para a distribuição, sem `gfix`, `gbak` ou execução de
+SQL.
 
-### Fase 2 — Decisão do usuário
+### Fase 2 — Decisão do usuário (somente sistemas com scripts)
 **Não implementada neste repositório.** Cabe ao ERP Delphi ler `PENDENTE`,
-perguntar ao usuário e gravar `AUTORIZADO`. Sem isso o ciclo trava aqui. Nos
-testes registrados em RISCOS-CONHECIDOS.md, essa fase é simulada gravando
-`AUTORIZADO` direto no banco via `isql`.
+perguntar ao usuário e gravar `AUTORIZADO`. Sem isso, a atualização daquele
+sistema permanece pendente. Nos testes registrados em RISCOS-CONHECIDOS.md,
+essa fase é simulada gravando `AUTORIZADO` direto no banco via `isql`.
 
 ### Fase 3 — Execução crítica
 `gfix -shut multi -force 0` (isola o banco, mantendo acesso SYSDBA) → `gbak`
@@ -69,10 +77,12 @@ Bredas\                     <- pasta do cliente (já existe hoje)
     7za.exe
     atualizador.ini          <- configuração deste cliente (não versionado)
     _trabalho\                <- descartável, recriada a cada ciclo
-      pacotes\                 <- downloads + extração da versão em andamento
+      pacotes\                 <- uma subpasta por sistema em atualização
+        B_Vendas\
+        B_NFe\
     Backups\                  <- PERSISTENTE, nunca apagada pela limpeza automática
-      JUNIOR_PRE_9.9.9_20260903_114500.fbk
-      JUNIOR_POS_9.9.9_20260903_114500.fbk
+      JUNIOR_PRE_B_Vendas_9_9_9_20260903_114500.fbk
+      JUNIOR_POS_B_Vendas_9_9_9_20260903_114500.fbk
 ```
 
 Por padrão (sem nada de caminho preenchido no `.ini`), `JUNIOR.fdb`/`BEXE.fdb`
@@ -81,17 +91,18 @@ ou seja, um nível acima, na pasta do cliente. `PASTA_TRABALHO`/`PASTA_BACKUPS`
 ficam dentro da própria pasta do agente. Qualquer um desses caminhos aceita
 override explícito no `.ini`, para o cliente cuja estrutura fugir do padrão.
 
-`_trabalho\pacotes\` é apagada e recriada a cada Fase 1 nova, e é a **única**
-pasta que a Fase 4 varre atrás de `*.exe` para injetar no `BEXE.fdb` — qualquer
-`.exe` que caia ali (inclusive de terceiros, ver item sobre `openssl.exe` no
-RISCOS-CONHECIDOS.md) só é considerado se estiver solto direto nela, não em
-subpastas. `Backups\` nunca é tocada pela limpeza automática de `_trabalho`;
+Cada sistema usa `_trabalho\pacotes\{sistema}\`, apagada e recriada quando uma
+nova versão daquele sistema é baixada. Todo o conteúdo extraído é copiado para a
+pasta do cliente, preservando as subpastas; somente os `.exe` soltos na raiz do
+pacote do sistema são injetados no `BEXE.fdb`. `Backups\` nunca é tocada pela
+limpeza automática de `_trabalho`;
 ela mesma se poda sozinha, mantendo só os últimos `BACKUPS_PARA_MANTER` ciclos
 (padrão: 10 — ver `Configuração`).
 
 Qualquer exceção na Fase 3 ou 4 dispara o `catch`: tenta restaurar o backup pré
-com `gbak -c -replace_database`, força o banco de volta ao ar, grava `ERRO` com a
-mensagem em `MENSAGEM_LOG` e reverte `VERSAO_NOVA` para a versão anterior.
+com `gbak -c -replace_database`, força o banco de volta ao ar e grava `ERRO` com
+a mensagem em `MENSAGEM_LOG`. `VERSAO_ATUAL` só avança no caminho de sucesso,
+portanto uma falha não exige reversão de versão.
 
 ## Requisitos
 
@@ -130,7 +141,8 @@ Notas.
 | Chave | Padrão | Obrigatória |
 |---|---|:-:|
 | `CODIGO_CLIENTE` | — | **sim** |
-| `SISTEMA` | — | **sim** |
+| `SISTEMAS` | — | **sim** |
+| `SISTEMAS_COM_SCRIPT` | vazio | |
 | `API_TOKEN` | — | **sim** |
 | `DB_PASSWORD` | — | **sim** |
 | `API_URL` | `http://localhost:3000/api` | |
@@ -161,17 +173,20 @@ painel casa esse valor com o cliente automaticamente (removendo pontuação dos
 dois lados) e mostra nome/cidade nos logs; qualquer outro valor não-vazio
 também funciona, só aparece cru em vez do nome da empresa.
 
-`SISTEMA` precisa bater, letra por letra, com o nome de um sistema
-cadastrado na aba **Sistemas** do painel web (ex.: `B_Vendas`, `B_NFe`,
-`B_Ordem`) — é o mesmo catálogo que aparece no formulário de "Preparar versão"
-da aba Distribuição. O painel mantém uma versão publicada **por sistema**, e o
-agente só recebe pacotes do sistema que ele mesmo declara: uma instância que
-atualiza o `JUNIOR.fdb`/`BEXE.fdb` do B_Vendas cuida só do B_Vendas, e uma
-máquina que roda mais de um sistema precisa de uma instância do serviço por
-sistema (pasta + `atualizador.ini` próprios), cada uma com seu próprio
-`SISTEMA`. Sem essa chave, o agente não consegue nem consultar se há
-atualização — o servidor recusa a chamada (ver
-`web/docs/DOCUMENTACAO_CONSOLIDADA.md`, seção "Contrato do agente (Worker C#)").
+`SISTEMAS` contém todos os produtos distribuídos pela empresa no formato
+`NomeNoPainel:Executavel.exe`, separados por vírgula. O nome precisa bater,
+letra por letra, com o cadastro da aba **Sistemas** (ex.:
+`B_Vendas:B_Vendas.exe,B_NFe:B_NFE.exe`). A mesma lista completa pode ser usada
+em todos os clientes: a cada ciclo, o agente verifica quais executáveis existem
+ao lado do `BEXE.fdb` e só consulta os sistemas encontrados. Uma única instância
+cuida de todos eles, mantendo estado e pasta de trabalho separados por sistema.
+
+`SISTEMAS_COM_SCRIPT` é a lista opcional dos sistemas autorizados a executar
+SQL no `JUNIOR.fdb`. Eles usam o fluxo completo com `PENDENTE`, autorização do
+ERP, shutdown e backups. Qualquer sistema ausente dessa lista segue o fluxo de
+troca de arquivos, mesmo que seu pacote contenha `.sql`; essa decisão nunca é
+inferida pelo conteúdo do pacote. Veja os exemplos comentados em
+[atualizador.ini.example](atualizador.ini.example).
 
 > A porta `3050` é o padrão do Firebird, mas ambientes reais usam outras — um
 > `BScript.Ini` de produção inspecionado usava `3051`. Confira antes.
@@ -218,7 +233,7 @@ definido em [Program.cs](Program.cs).
 
 Todas as chamadas mandam o header `X-Agent-Token`.
 
-**`GET {API_URL}/update/check/{cnpj}?versao={versaoAtual}`**
+**`GET {API_URL}/update/check/{codigoCliente}?sistema={sistema}&versao={versaoAtual}`**
 
 ```json
 {
@@ -236,7 +251,7 @@ contrato por compatibilidade, mas o agente não lê mais esse campo — a Fase 3
 aplica os `.sql` do próprio pacote via `ScriptRunnerService`, não mais um
 binário externo (ver [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)).
 
-**`POST {API_URL}/update/log`** — `{ "cnpj": "...", "status": "SUCESSO|ERRO", "detalhes": "..." }`
+**`POST {API_URL}/update/log`** — `{ "cnpj": "...", "sistema": "...", "status": "SUCESSO|ERRO", "detalhes": "..." }`
 (best-effort: falha de rede aqui não interrompe nada).
 
 ## Formato gravado em `EXECUTAVEIS` (`BEXE.fdb`)
@@ -268,15 +283,15 @@ Services/ProcessService.cs        executa processos externos com timeout obrigat
 ```
 
 **Toda chamada a processo externo passa pelo `ProcessService` e exige timeout.**
-Isso não é estilo, é segurança: a Fase 3 roda com o banco em `-shut force_0`
-(bloqueado para todos os usuários), então um processo que trava sem timeout
-deixaria o cliente inteiro parado até alguém perceber. Ver
+Isso não é estilo, é segurança: a Fase 3 roda com o banco em
+`-shut multi -force 0` (terminais bloqueados, acesso administrativo mantido),
+então um processo que trava sem timeout deixaria o cliente inteiro parado até
+alguém perceber. Ver
 [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md).
 
 O schema real do `BEXE.fdb` (tabela `EXECUTAVEIS`) foi confirmado por engenharia
 reversa de um arquivo de produção, e o formato gravado em cada campo foi
 confirmado contra uma cópia correta (ver seção acima). A tabela `SYS_ATUALIZACAO`
 do `JUNIOR.fdb` **não existe** nesse schema real — por isso o próprio agente a
-cria (e insere a linha `ID = 1` inicial) no primeiro ciclo, se ainda não existir
-(`DatabaseService.GarantirTabelaSysAtualizacao`, chamado uma vez no arranque do
-`Worker`).
+cria e garante uma linha por sistema instalado, usando `SISTEMA` como chave
+primária (`DatabaseService.GarantirTabelaSysAtualizacao`).
