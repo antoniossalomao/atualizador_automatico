@@ -6,8 +6,8 @@ namespace AtualizadorERP.Tests;
 
 /// <summary>
 /// Cobre, com Firebird e isql reais, os achados do item 1 do RISCOS-CONHECIDOS.md: scripts
-/// isolados por processo, scripts já aplicados antes de existir a tabela SCRIPTS, nomes
-/// duplicados entre subpastas e um script quebrado não travando o lote.
+/// isolados por processo, scripts já aplicados antes de existir a tabela SCRIPTS, subpastas
+/// (arquivo histórico) ignoradas na execução e um script quebrado não travando o lote.
 /// </summary>
 public class ScriptRunnerServiceTests
 {
@@ -118,27 +118,34 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
-    public async Task Scripts_com_mesmo_nome_em_subpastas_diferentes_aplicam_os_dois()
+    public async Task Scripts_em_subpastas_profundas_sao_ignorados_raiz_e_um_nivel_abaixo_rodam()
     {
-        // Achado real: 26 nomes de arquivo duplicados entre subpastas de Scripts-BVendas. Registrar
-        // só pelo nome faria o segundo ser ignorado como "já aplicado" pra sempre.
+        // Achado real (cliente Bredas, conferido com "7za l" no pacote publicado de verdade): o
+        // pacote NUNCA solta .sql direto nele -- embrulha tudo numa pasta por sistema
+        // ("Scripts-BVendas\", ao lado de "Dlls-BVendas\"), espelhando a estrutura da pasta do
+        // cliente. Dentro dela, subpastas tipo "scripts2012\"/"scripts2016\" são arquivo histórico
+        // do BScript.exe, não pendência nova -- rodar por engano os de lá polui o relatório com
+        // falhas que nunca foram de verdade (25 "erro" reportados num teste real, todos scripts de
+        // anos atrás já aplicados manualmente). Uma correção anterior tentou restringir a busca a
+        // "SearchOption.TopDirectoryOnly" direto em pacotesPath -- e não achava NENHUM script,
+        // porque a raiz de verdade é "Scripts-BVendas\", um nível abaixo, não pacotesPath em si.
         using var junior = FirebirdTestDatabase.CriarJunior();
         var pasta = NovaPastaPacotes();
         try
         {
-            Directory.CreateDirectory(Path.Combine(pasta, "scripts2012"));
-            Directory.CreateDirectory(Path.Combine(pasta, "scripts2016"));
-            File.WriteAllText(Path.Combine(pasta, "scripts2012", "Cria_campo_x.sql"), "CREATE TABLE TABELA_2012 (ID INTEGER);");
-            File.WriteAllText(Path.Combine(pasta, "scripts2016", "Cria_campo_x.sql"), "CREATE TABLE TABELA_2016 (ID INTEGER);");
+            Directory.CreateDirectory(Path.Combine(pasta, "Scripts-BVendas", "scripts2012"));
+            File.WriteAllText(Path.Combine(pasta, "Scripts-BVendas", "scripts2012", "Cria_campo_x.sql"), "CREATE TABLE TABELA_2012 (ID INTEGER);");
+            File.WriteAllText(Path.Combine(pasta, "Scripts-BVendas", "Cria_tabela_um_nivel.sql"), "CREATE TABLE TABELA_UM_NIVEL (ID INTEGER);");
+            File.WriteAllText(Path.Combine(pasta, "Cria_tabela_raiz.sql"), "CREATE TABLE TABELA_RAIZ (ID INTEGER);");
 
             int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
 
             Assert.Equal(0, falhas);
             var aplicados = new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo);
-            Assert.Contains(Path.Combine("scripts2012", "Cria_campo_x.sql"), aplicados);
-            Assert.Contains(Path.Combine("scripts2016", "Cria_campo_x.sql"), aplicados);
-            Assert.True(new DatabaseService(TestAmbiente.Config).VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2012 (ID INTEGER)").JaExiste);
-            Assert.True(new DatabaseService(TestAmbiente.Config).VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2016 (ID INTEGER)").JaExiste);
+            Assert.Contains("Cria_tabela_raiz.sql", aplicados);
+            Assert.Contains("Cria_tabela_um_nivel.sql", aplicados);
+            Assert.DoesNotContain("Cria_campo_x.sql", aplicados);
+            Assert.False(new DatabaseService(TestAmbiente.Config).VerificarObjetoDdl(junior.CaminhoArquivo, "CREATE TABLE TABELA_2012 (ID INTEGER)").JaExiste);
         }
         finally
         {

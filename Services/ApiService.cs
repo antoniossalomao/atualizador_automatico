@@ -187,8 +187,13 @@ public class ApiService
     /// <paramref name="versao"/>/<paramref name="versaoAnterior"/>/<paramref name="duracao"/> são
     /// opcionais -- ficam nulos nos logs de falha de script individual (ScriptRunnerService), que
     /// reportam um problema no MEIO do processo, não a transição de versão completa.
+    /// <paramref name="fase"/> identifica EM QUE ETAPA da Fase 3 isto aconteceu (shutdown,
+    /// backup_pre, scripts, copia_arquivos, injecao_binarios, online, backup_pos, concluido,
+    /// aguardando_autorizacao) -- sem isso, um ERRO só trazia a mensagem crua da exceção, nunca
+    /// onde no processo ela aconteceu (ver Worker.ProcessarAtualizacao, que rastreia isso num
+    /// "faseAtual" local e reporta o valor de quando quebrou, não de onde deveria ter chegado).
     /// </summary>
-    public async Task SendLog(string codigoCliente, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null, CancellationToken cancellationToken = default)
+    public async Task SendLog(string codigoCliente, string sistema, string status, string detalhes, string? versao = null, string? versaoAnterior = null, TimeSpan? duracao = null, CancellationToken cancellationToken = default, string? fase = null)
     {
         try
         {
@@ -204,6 +209,7 @@ public class ApiService
                 versao = versao ?? "",
                 versaoAnterior = versaoAnterior ?? "",
                 duracaoMs = duracao.HasValue ? (long?)Math.Round(duracao.Value.TotalMilliseconds) : null,
+                fase = fase ?? "",
                 maquina = _nomeMaquina,
             };
             var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");

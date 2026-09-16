@@ -120,6 +120,13 @@ public class Worker : BackgroundService
                     if (EhSistemaComScript(sistema))
                     {
                         _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "PENDENTE", updateInfo.Version);
+                        // Só reportado aqui, uma vez, no instante da transição -- nos ciclos
+                        // seguintes o status já não bate mais com "CONCLUIDO"/"ERRO" (ver o
+                        // if logo acima), então este branch não roda de novo enquanto persistir
+                        // PENDENTE. Sem isso, o painel nunca sabia que um sistema estava esperando
+                        // autorização -- só via "desatualizado" genérico, indistinguível de um
+                        // agente que nem chegou a baixar nada.
+                        await _apiService.SendLog(_config.CodigoCliente, sistema, "PENDENTE", "Atualização baixada, aguardando autorização (Fase 2) para aplicar.", versaoAtual, null, null, stoppingToken, fase: "aguardando_autorizacao");
                     }
                     else
                     {
@@ -192,14 +199,17 @@ public class Worker : BackgroundService
     {
         string versaoAnterior = _databaseService.GetVersaoConfirmada(_config.JuniorFdbPath, sistema);
         var cronometro = System.Diagnostics.Stopwatch.StartNew();
+        string faseAtual = "copia_arquivos";
         try
         {
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "PROCESSANDO", versaoAlvo);
             CopiarParaPastaCliente(pastaPacotes);
+            faseAtual = "injecao_binarios";
             _databaseService.InjetarNovosBinarios(_config.BexeFdbPath, pastaPacotes, versaoAlvo);
+            faseAtual = "concluido";
             _databaseService.ConfirmarVersaoAtual(_config.JuniorFdbPath, sistema);
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "CONCLUIDO", null);
-            await _apiService.SendLog(_config.CodigoCliente, sistema, "SUCESSO", "Atualização concluída sem script (só troca de executável).", versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken);
+            await _apiService.SendLog(_config.CodigoCliente, sistema, "SUCESSO", "Atualização concluída sem script (só troca de executável).", versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken, fase: faseAtual);
             if (Directory.Exists(pastaPacotes)) Directory.Delete(pastaPacotes, true);
             return true;
         }
@@ -207,7 +217,7 @@ public class Worker : BackgroundService
         {
             _logger.LogError(ex, "Falha aplicando atualização sem script para {sistema}.", sistema);
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "ERRO", null, ex.Message);
-            await _apiService.SendLog(_config.CodigoCliente, sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken);
+            await _apiService.SendLog(_config.CodigoCliente, sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken, fase: faseAtual);
             return false;
         }
     }
@@ -254,6 +264,11 @@ public class Worker : BackgroundService
         // movimentou desde então. O mesmo valia para um .fbk truncado por um gbak que falhou no
         // meio.
         bool backupValido = false;
+        // Rastreia a etapa em que o ciclo está -- se cair no catch abaixo, "faseAtual" já é a
+        // etapa que estava rodando quando a exceção aconteceu (não a próxima que faltava
+        // alcançar), e é isso que vai pro painel de Distribuição via SendLog. Sem isso um erro
+        // só dizia a mensagem crua da exceção, nunca ONDE no processo ela ocorreu.
+        string faseAtual = "shutdown";
         try
         {
             if (File.Exists(preBkp)) File.Delete(preBkp);
@@ -265,23 +280,30 @@ public class Worker : BackgroundService
             // administrativo, que é o que a Fase 3 precisa.
             await _processService.RunProcessAsync(_config.GfixPath, new[] { "-shut", "multi", "-force", "0", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
 
+            faseAtual = "backup_pre";
             await _processService.RunProcessAsync(_config.GbakPath, new[] { "-b", alvoJunior, preBkp }, GbakTimeout, stoppingToken, credenciaisEnv);
             backupValido = true;
 
+            faseAtual = "scripts";
             int scriptsComFalha = await _scriptRunnerService.RunPendingScriptsAsync(_config.JuniorFdbPath, pastaPacotes, _config.CodigoCliente, sistema, stoppingToken);
 
             // "versaoAlvo", não uma nova leitura de VERSAO_NOVA: o valor não muda durante o
             // processamento (só GetVersaoConfirmada/VERSAO_ATUAL avança, e só depois do sucesso
             // completo, em ConfirmarVersaoAtual abaixo) -- reler seria uma consulta a mais no banco
             // pra buscar exatamente o mesmo valor já lido antes do shutdown.
+            faseAtual = "copia_arquivos";
             CopiarParaPastaCliente(pastaPacotes);
+            faseAtual = "injecao_binarios";
             _databaseService.InjetarNovosBinarios(_config.BexeFdbPath, pastaPacotes, versaoAlvo);
+            faseAtual = "online";
             await _processService.RunProcessAsync(_config.GfixPath, new[] { "-online", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
 
             // Backup pós-atualização depois do "-online", não antes: com o banco já online, o
             // gbak roda sem somar tempo à janela de indisponibilidade dos terminais do ERP.
+            faseAtual = "backup_pos";
             string posBkp = Path.Combine(_config.PastaTrabalho, $"JUNIOR_POS_{sistema}.fbk");
             await _processService.RunProcessAsync(_config.GbakPath, new[] { "-b", alvoJunior, posBkp }, GbakTimeout, stoppingToken, credenciaisEnv);
+            faseAtual = "concluido";
 
             // VERSAO_ATUAL só avança pra VERSAO_NOVA aqui -- na Fase 3 concluída de verdade. Se
             // qualquer passo acima (gfix/gbak/scripts/injeção) tivesse lançado, essa linha nunca
@@ -295,7 +317,7 @@ public class Worker : BackgroundService
                 ? $"Atualização concluída com {scriptsComFalha} script(s) pulado(s) por erro -- ver detalhes nos retornos individuais."
                 : "Atualização concluída com sucesso.";
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "CONCLUIDO", null, scriptsComFalha > 0 ? mensagemFinal : null);
-            await _apiService.SendLog(_config.CodigoCliente, sistema, "SUCESSO", mensagemFinal, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken);
+            await _apiService.SendLog(_config.CodigoCliente, sistema, "SUCESSO", mensagemFinal, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken, fase: faseAtual);
 
             ArquivarBackups(sistema, preBkp, posBkp, versaoAlvo);
             if (Directory.Exists(pastaPacotes)) Directory.Delete(pastaPacotes, true);
@@ -328,8 +350,9 @@ public class Worker : BackgroundService
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "ERRO", null, ex.Message);
             // "versaoAlvo" aqui é a versão que esta tentativa buscava e NÃO alcançou (o rollback
             // acima já devolveu o banco pro estado de "versaoAnterior") -- é o que o painel precisa
-            // pra mostrar "tentou ir pra 2026.09.01, falhou, continua na 2026.08.27".
-            await _apiService.SendLog(_config.CodigoCliente, sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken);
+            // pra mostrar "tentou ir pra 2026.09.01, falhou, continua na 2026.08.27". "faseAtual"
+            // ainda vale a etapa onde a exceção aconteceu (nunca foi reatribuída no catch).
+            await _apiService.SendLog(_config.CodigoCliente, sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken, fase: faseAtual);
             return false;
         }
     }

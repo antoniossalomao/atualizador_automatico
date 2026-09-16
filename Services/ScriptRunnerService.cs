@@ -35,8 +35,24 @@ public class ScriptRunnerService
     }
 
     /// <summary>
-    /// Aplica, em ordem alfabética de nome de arquivo, todo ".sql" encontrado em qualquer
-    /// subpasta de <paramref name="pacotesPath"/> que ainda não esteja em SYS_ATUALIZACAO/SCRIPTS.
+    /// Aplica, em ordem alfabética de nome de arquivo, todo ".sql" "raiz" encontrado dentro de
+    /// <paramref name="pacotesPath"/> que ainda não esteja em SYS_ATUALIZACAO/SCRIPTS. "Raiz" aqui
+    /// NÃO é <c>SearchOption.TopDirectoryOnly</c> em cima de <paramref name="pacotesPath"/> --
+    /// conferido contra o pacote real do B_Vendas (via "7za l"): o pacote nunca solta .sql direto
+    /// nele, sempre embrulha tudo numa pasta por sistema (ex.: "Scripts-BVendas\", ao lado de
+    /// "Dlls-BVendas\", espelhando a própria estrutura da pasta do cliente). Uma primeira versão
+    /// desta correção usava TopDirectoryOnly ali e não encontrava NENHUM script -- pior que o bug
+    /// original. <see cref="EhScriptRaiz"/> aceita .sql solto direto em
+    /// <paramref name="pacotesPath"/> OU um nível abaixo (dentro de uma pasta como
+    /// "Scripts-BVendas\"), mas não dois níveis (ex.: "Scripts-BVendas\scripts2012\") -- essas
+    /// subpastas mais fundas são o ARQUIVO histórico do BScript.exe (script já rodado há anos pela
+    /// tela, mantido só de referência), não pendência nova. Rodando por engano os de lá, um cujo
+    /// objeto não bate com os padrões reconhecidos por <see cref="DatabaseService.VerificarObjetoDdl"/>
+    /// falha o isql à toa e polui o relatório com dezenas de "erro" que nunca foram pendência de
+    /// verdade (visto num pacote real: 25 scripts de "scripts2012"/"scripts2015" reportados como
+    /// falha, todos já aplicados manualmente décadas atrás). Essas subpastas continuam indo para a
+    /// pasta do cliente normalmente -- ver Worker.CopiarParaPastaCliente, que copia tudo
+    /// recursivamente -- só não são candidatas a EXECUÇÃO aqui.
     ///
     /// Antes de rodar um script não registrado, confere nas tabelas de sistema do Firebird se o
     /// objeto que ele cria já existe -- cobre os scripts antigos que foram aplicados décadas atrás,
@@ -55,12 +71,13 @@ public class ScriptRunnerService
     public async Task<int> RunPendingScriptsAsync(string dbPath, string pacotesPath, string codigoCliente, string sistema, CancellationToken cancellationToken = default)
     {
         var scripts = Directory.GetFiles(pacotesPath, "*.sql", SearchOption.AllDirectories)
+            .Where(caminho => EhScriptRaiz(pacotesPath, caminho))
             .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         if (scripts.Count == 0)
         {
-            _logger.LogInformation("Nenhum script .sql no pacote desta versão.");
+            _logger.LogInformation("Nenhum script .sql \"raiz\" no pacote desta versão (subpastas mais fundas, se houver, não contam -- são arquivo histórico).");
             return 0;
         }
 
@@ -73,17 +90,14 @@ public class ScriptRunnerService
         foreach (var scriptPath in scripts)
         {
             posicao++;
+            // Só nome do arquivo, não caminho relativo: com a busca restrita à raiz (ver acima),
+            // todo script já está direto em pacotesPath -- não existe mais subpasta para
+            // desambiguar, e nomeArquivo já bate igual com o que o BScript.exe grava manualmente
+            // em SCRIPTS (que só conhece o nome, nunca uma subpasta).
             string nomeArquivo = Path.GetFileName(scriptPath);
-            // Caminho relativo (ex.: "Scripts-BVendas\scripts2012\X.sql"), não só o nome do
-            // arquivo: achamos 26 nomes duplicados entre subpastas diferentes de um pacote real
-            // (ex. um "Cria_campo_X.sql" solto na raiz E dentro de "scripts2012"). Registrando só
-            // pelo nome, aplicar um marcaria o outro como "já aplicado" pra sempre, sem nunca
-            // rodar. Ainda checa o nome puro também, pra continuar batendo com entradas antigas
-            // que o BScript.exe gravou manualmente (que só conhecem o nome, não a subpasta).
-            string caminhoRelativo = Path.GetRelativePath(pacotesPath, scriptPath);
-            if (jaAplicados.Contains(nomeArquivo) || jaAplicados.Contains(caminhoRelativo))
+            if (jaAplicados.Contains(nomeArquivo))
             {
-                _logger.LogInformation("Script já aplicado, pulando: {caminho}", caminhoRelativo);
+                _logger.LogInformation("Script já aplicado, pulando: {nome}", nomeArquivo);
                 continue;
             }
 
@@ -91,35 +105,48 @@ public class ScriptRunnerService
             var (reconhecido, jaExiste, descricao) = _databaseService.VerificarObjetoDdl(dbPath, sqlContent);
             if (reconhecido && jaExiste)
             {
-                _logger.LogInformation("Script {caminho}: {descricao} já existe no banco -- registrando como aplicado sem executar.", caminhoRelativo, descricao);
-                _databaseService.RegistrarScriptAplicado(dbPath, caminhoRelativo);
+                _logger.LogInformation("Script {nome}: {descricao} já existe no banco -- registrando como aplicado sem executar.", nomeArquivo, descricao);
+                _databaseService.RegistrarScriptAplicado(dbPath, nomeArquivo);
                 continue;
             }
 
-            _logger.LogInformation("Aplicando script: {caminho}", caminhoRelativo);
+            _logger.LogInformation("Aplicando script: {nome}", nomeArquivo);
             try
             {
                 await RunIsqlAsync(dbPath, scriptPath, cancellationToken);
             }
             catch (Exception ex)
             {
-                string relatorio = MontarRelatorioErro(caminhoRelativo, posicao, scripts.Count, jaAplicadosAntes, reconhecido, descricao, ex);
-                _logger.LogError("Script {caminho} falhou -- reportado à API, seguindo para o próximo. {relatorio}", caminhoRelativo, relatorio);
+                string relatorio = MontarRelatorioErro(nomeArquivo, posicao, scripts.Count, jaAplicadosAntes, reconhecido, descricao, ex);
+                _logger.LogError("Script {nome} falhou -- reportado à API, seguindo para o próximo. {relatorio}", nomeArquivo, relatorio);
                 // Sem versão/duração aqui: este log reporta a falha de UM script no meio do lote,
                 // não a transição de versão completa -- essa (com sucesso ou erro) é reportada uma
                 // vez só, no fim, por Worker.ProcessarAtualizacao.
-                await _apiService.SendLog(codigoCliente, sistema, "ERRO", relatorio);
+                await _apiService.SendLog(codigoCliente, sistema, "ERRO", relatorio, fase: "scripts");
                 falhas++;
                 continue;
             }
 
-            _databaseService.RegistrarScriptAplicado(dbPath, caminhoRelativo);
+            _databaseService.RegistrarScriptAplicado(dbPath, nomeArquivo);
         }
 
         if (falhas > 0)
             _logger.LogWarning("{falhas} script(s) falharam nesta rodada e foram pulados -- cada um já foi reportado à API individualmente.", falhas);
 
         return falhas;
+    }
+
+    /// <summary>
+    /// True se <paramref name="caminhoScript"/> está solto direto em <paramref name="pacotesPath"/>
+    /// ou um nível abaixo (ex.: "Scripts-BVendas\X.sql") -- false se estiver dois níveis ou mais
+    /// (ex.: "Scripts-BVendas\scripts2012\X.sql", arquivo histórico, ver comentário de
+    /// <see cref="RunPendingScriptsAsync"/>).
+    /// </summary>
+    private static bool EhScriptRaiz(string pacotesPath, string caminhoScript)
+    {
+        string relativo = Path.GetRelativePath(pacotesPath, caminhoScript);
+        int separadores = relativo.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar);
+        return separadores <= 1;
     }
 
     private static string MontarRelatorioErro(string nomeArquivo, int posicao, int total, int jaAplicadosAntes, bool reconhecido, string descricaoDdl, Exception erroOriginal)
