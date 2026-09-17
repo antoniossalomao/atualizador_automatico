@@ -41,6 +41,15 @@ SISTEMAS=
 ; Ex.: SISTEMAS_COM_SCRIPT=B_Vendas
 SISTEMAS_COM_SCRIPT=
 
+; Opcional (default vazio). Lista separada por virgula de nomes de arquivo .sql que o agente
+; NUNCA deve tentar rodar, mesmo que apareçam pendentes num pacote -- pra scripts legados
+; conhecidos como quebrados de origem (ex.: um corpo de procedure salvo sem o cabeçalho "ALTER
+; PROCEDURE"), onde nenhuma correção automática resolve porque o proprio arquivo esta incompleto.
+; So' o nome do arquivo, sem caminho -- fica pendente pra sempre (sem erro reportado) ate alguem
+; corrigir o arquivo de origem e tirar da lista.
+; Ex.: SCRIPTS_IGNORADOS=20241009Altera_Procedure_Inventario_NFCe.sql
+SCRIPTS_IGNORADOS=
+
 ; Precisa bater com o AGENT_API_TOKEN configurado no servidor (web/server/.env).
 API_TOKEN=
 

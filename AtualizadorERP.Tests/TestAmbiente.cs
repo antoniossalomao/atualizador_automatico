@@ -29,7 +29,8 @@ public static class TestAmbiente
         string? pastaBackups = null,
         int backupsParaManter = 10,
         IReadOnlyList<SistemaConfigurado>? sistemas = null,
-        IReadOnlyList<string>? sistemasComScript = null)
+        IReadOnlyList<string>? sistemasComScript = null,
+        IReadOnlyList<string>? scriptsIgnorados = null)
     {
         string trabalho = pastaTrabalho ?? Directory.CreateTempSubdirectory("atualizador_trabalho_").FullName;
         string backups = pastaBackups ?? Directory.CreateTempSubdirectory("atualizador_backups_").FullName;
@@ -50,6 +51,7 @@ public static class TestAmbiente
             isqlPath: $@"{FirebirdBin}\isql.exe",
             pastaTrabalho: trabalho,
             pastaBackups: backups,
-            backupsParaManter: backupsParaManter);
+            backupsParaManter: backupsParaManter,
+            scriptsIgnorados: scriptsIgnorados);
     }
 }

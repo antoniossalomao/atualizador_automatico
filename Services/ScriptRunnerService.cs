@@ -103,6 +103,19 @@ public class ScriptRunnerService
                 continue;
             }
 
+            // Lista deliberada em ConfiguracaoAgente.ScriptsIgnorados -- pra scripts legados
+            // conhecidos como quebrados de origem (achado inspecionando os 1027 scripts reais do
+            // B_Vendas: um "Altera_Procedure_X.sql" que era só o corpo solto, sem o cabeçalho
+            // "ALTER PROCEDURE ... AS"), onde nenhuma correção automática resolve porque o
+            // próprio arquivo está incompleto. Nunca roda, nunca reporta erro, nunca registra em
+            // SCRIPTS -- fica pendente pra sempre até alguém corrigir o arquivo de origem e tirar
+            // da lista.
+            if (_config.ScriptsIgnorados.Contains(nomeArquivo, StringComparer.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("Script ignorado por configuração (SCRIPTS_IGNORADOS), pulando sem reportar: {nome}", nomeArquivo);
+                continue;
+            }
+
             string sqlContent = await File.ReadAllTextAsync(scriptPath, cancellationToken);
             var (reconhecido, jaExiste, descricao) = _databaseService.VerificarObjetoDdl(dbPath, sqlContent);
             if (reconhecido && jaExiste)

@@ -163,6 +163,37 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_em_ScriptsIgnorados_nunca_roda_e_nao_reporta_erro()
+    {
+        // Achado real: 20241009Altera_Procedure_Inventario_NFCe.sql, um script legado do B_Vendas
+        // que é só o corpo solto de uma procedure, sem o cabeçalho "ALTER PROCEDURE ... AS" --
+        // nenhuma correção automática resolve porque o próprio arquivo está incompleto. Simula com
+        // um SQL igualmente quebrado (sintaxe inválida de propósito) pra provar que ele nunca
+        // chega a rodar no isql quando está em SCRIPTS_IGNORADOS.
+        var configComIgnorado = TestAmbiente.NovaConfiguracao(scriptsIgnorados: new[] { "Script_quebrado_ignorado.sql" });
+        var databaseService = new DatabaseService(configComIgnorado);
+        var processService = new ProcessService(NullLogger<ProcessService>.Instance);
+        var apiService = new ApiService(NullLogger<ApiService>.Instance, configComIgnorado);
+        var scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService, configComIgnorado);
+
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            File.WriteAllText(Path.Combine(pasta, "Script_quebrado_ignorado.sql"), "BEGIN\n  x := 1;\nEND");
+
+            int falhas = await scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            Assert.DoesNotContain("Script_quebrado_ignorado.sql", databaseService.GetScriptsAplicados(junior.CaminhoArquivo));
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Script_de_tipo_nao_reconhecido_cujo_objeto_ja_existe_e_marcado_aplicado_sem_reportar_erro()
     {
         // Mesmo cenário legado do teste acima (objeto criado décadas atrás, nunca registrado em

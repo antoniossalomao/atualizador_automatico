@@ -44,6 +44,14 @@ public class ConfiguracaoAgente
     /// explícita e deliberada é segura aqui.</summary>
     public IReadOnlyList<string> SistemasComScript { get; }
 
+    /// <summary>Nomes de arquivo (ex.: "20241009Altera_Procedure_Inventario_NFCe.sql") que o
+    /// ScriptRunnerService nunca tenta rodar, mesmo que apareçam pendentes num pacote -- pra
+    /// scripts legados conhecidos como quebrados de origem (ex.: um corpo de procedure salvo sem
+    /// o cabeçalho "ALTER PROCEDURE", achado inspecionando os scripts reais do B_Vendas), onde
+    /// nenhuma correção automática resolve porque o próprio arquivo está incompleto. Comparado só
+    /// pelo nome do arquivo (não pelo conteúdo) -- é a mesma chave que SCRIPTS já usa.</summary>
+    public IReadOnlyList<string> ScriptsIgnorados { get; }
+
     public string ApiUrl { get; }
     public string ApiToken { get; }
     public string DbUser { get; }
@@ -89,6 +97,9 @@ public class ConfiguracaoAgente
         // Opcional, default vazio: um cliente que só distribui .exe (nenhum sistema com script)
         // não precisa preencher isso.
         SistemasComScript = ListaOpcional(valores, "SISTEMAS_COM_SCRIPT");
+        // Opcional, default vazio -- a maioria dos clientes não tem nenhum script legado quebrado
+        // pra ignorar.
+        ScriptsIgnorados = ListaOpcional(valores, "SCRIPTS_IGNORADOS");
         ApiToken = Obrigatorio(valores, "API_TOKEN", caminhoIni);
         DbPassword = Obrigatorio(valores, "DB_PASSWORD", caminhoIni);
 
@@ -115,11 +126,13 @@ public class ConfiguracaoAgente
         string dbUser, string dbPassword, string dbPort,
         string juniorFdbPath, string bexeFdbPath,
         string gfixPath, string gbakPath, string isqlPath,
-        string pastaTrabalho, string pastaBackups, int backupsParaManter)
+        string pastaTrabalho, string pastaBackups, int backupsParaManter,
+        IReadOnlyList<string>? scriptsIgnorados = null)
     {
         CodigoCliente = codigoCliente;
         Sistemas = sistemas;
         SistemasComScript = sistemasComScript;
+        ScriptsIgnorados = scriptsIgnorados ?? Array.Empty<string>();
         ApiUrl = apiUrl;
         ApiToken = apiToken;
         DbUser = dbUser;
