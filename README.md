@@ -205,9 +205,8 @@ dotnet publish AtualizadorERP.csproj -c Release -r win-x64 --self-contained true
 Isso produz só 3 arquivos em `Atualizador/`: `AtualizadorERP.exe` (~70 MB, com
 tudo embutido), `AtualizadorERP.pdb` e `atualizador.ini.example` (copiado
 sozinho, configurado no `.csproj`). Copie o `7za.exe` pra dentro também (ver
-"Requisitos" acima — **o pacote baixado do CI já vem com isso**, não precisa
-desse passo manual se usar o artefato do GitHub Actions em vez de compilar
-localmente).
+"Requisitos" acima — **quem instala em cliente não precisa desse passo manual**,
+ver abaixo).
 
 > Publicando localmente mais de uma vez **na mesma pasta de saída**, sem
 > limpar `bin/`/`obj/` entre uma e outra: já reproduzido um caso em que o
@@ -217,8 +216,23 @@ localmente).
 > publicação só) — só apague `bin/`, `obj/` e a pasta de saída antes de
 > publicar de novo localmente se for testar isso na mão.
 
-Copie a pasta `Atualizador/` inteira pra dentro da pasta do cliente (ver "Onde
-o agente mora"), renomeie `atualizador.ini.example` pra `atualizador.ini` e
+### Instalando num cliente
+
+Cada push na `main` publica um instalador pronto em
+`https://github.com/<org>/<repo>/releases/latest` (release `latest`, sempre
+sobrescrita — sempre é o build mais recente). Baixe
+`InstalarAtualizadorERP.exe`, jogue dentro da pasta do cliente (ao lado de
+`JUNIOR.fdb`/`BEXE.fdb`, ver "Onde o agente mora") e execute: ele extrai a
+pasta `Atualizador\` ali do lado sozinho — sem precisar descompactar nada na
+mão nem baixar o `7za.exe` à parte (já vem embutido no pacote).
+
+É um `.exe` autoextraível de verdade (módulo SFX do 7-Zip + o `.7z` do pacote
+concatenados em binário — ver o passo "Montar o instalador" em
+[build.yml](.github/workflows/build.yml)), não um artefato do GitHub Actions:
+artefato do Actions sempre vem embrulhado num `.zip` extra ao baixar (sem como
+desligar isso), o que dava arquivo compactado dentro de outro compactado.
+
+Depois de extraído, renomeie `atualizador.ini.example` pra `atualizador.ini`,
 preencha, e registre o serviço:
 
 ```powershell

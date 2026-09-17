@@ -7,6 +7,11 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    # O GITHUB_TOKEN default e' read-only em muitos repositorios -- sem isso, o passo
+    # "Publicar a release" abaixo (que cria/atualiza a release "latest" e sobe o instalador)
+    # falha com 403, mesmo o job inteiro rodando verde ate ali.
+    permissions:
+      contents: write
 
     steps:
     - name: Baixar o código do repositório
@@ -68,20 +73,6 @@ jobs:
         }
         Get-ChildItem ./Atualizador | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 
-    # O GitHub SEMPRE entrega o artefato dentro de um .zip -- isso nao da para
-    # desligar. Mas zipar um .7z que ja esta comprimido nao acrescenta nada,
-    # entao compactar aqui dentro faz o download cair de ~30 MB para ~21 MB.
-    #
-    # Medido nesta maquina, com o executavel real:
-    #   zip(exe cru) ........................ 30.1 MB  (era o que vinha antes)
-    #   zip(exe com EnableCompressionInSingleFile) 29.6 MB
-    #   zip(7z do exe com aquela opcao ligada) ... 28.0 MB
-    #   zip(7z do exe cru) .................. 21.1 MB  <- este
-    #
-    # Repare que ligar EnableCompressionInSingleFile PIORA o resultado final:
-    # o .NET comprime os assemblies por dentro, e o 7z depois nao tem mais o
-    # que espremer. Comprimir duas vezes rende menos que comprimir uma vez bem.
-    #
     # "./Atualizador" (a pasta inteira), nao "./Atualizador/*" (o conteudo dela):
     # quem instala precisa arrastar UMA pasta pra dentro da pasta do cliente (ver
     # "Onde o agente mora" no README), nao espalhar .exe/.dll/7za.exe soltos ali.
@@ -92,11 +83,76 @@ jobs:
       shell: pwsh
       run: 7z a -t7z -mx=9 -m0=lzma2 AtualizadorAutomatico.7z ./Atualizador
 
-    - name: Disponibilizar o pacote para download
-      uses: actions/upload-artifact@v7
-      with:
-        name: AtualizadorAutomatico-EXE
-        path: AtualizadorAutomatico.7z
-        # O conteudo ja esta comprimido; relevar o zip do GitHub economiza
-        # tempo de CPU sem custar tamanho nenhum.
-        compression-level: 0
+    # Vira um instalador de verdade (.exe), igual ao pacote do B_Vendas: joga na pasta
+    # do cliente, executa, aparece a pasta "Atualizador\" do lado -- sem precisar
+    # descompactar nada na mao. Tecnica padrao do 7-Zip: concatenar em binario o modulo
+    # SFX (7z.sfx, que ja vem instalado no runner junto com o 7-Zip completo -- nao e' o
+    # 7za.exe "extra" baixado acima, que e' so o CLI standalone sem os modulos SFX) +
+    # um config.txt de texto + o .7z com os dados. O resultado e' um .exe unico que roda
+    # o extrator embutido do 7-Zip.
+    - name: Gerar o config.txt do instalador
+      shell: pwsh
+      run: |
+        $sfxModule = "C:\Program Files\7-Zip\7z.sfx"
+        if (-not (Test-Path $sfxModule)) {
+          throw "7z.sfx nao encontrado em '$sfxModule' -- o runner do GitHub deveria vir com o 7-Zip completo instalado (nao so o 7za.exe standalone). Se a imagem do runner mudou, ajuste o caminho aqui."
+        }
+
+        # GUIMode=1 + GUIFlags/OverwriteMode abaixo: barra de progresso simples, sem
+        # perguntar pasta de destino (extrai sempre ao lado de onde o .exe for
+        # executado) e sobrescrevendo sem perguntar -- o mesmo comportamento de
+        # rodar duas vezes uma atualizacao por cima da anterior.
+        #
+        # Array de linhas, nao here-string: um here-string PowerShell exige o
+        # delimitador de fechamento ("'@") na coluna zero da linha, o que colide com a
+        # indentacao que o YAML exige dentro de um bloco "run: |".
+        $linhasConfig = @(
+          ';!@Install@!UTF-8!',
+          'Title="Atualizador ERP"',
+          'BeginPrompt="Instalar o Atualizador ERP nesta pasta?"',
+          'ExtractTitle="Atualizador ERP - instalando"',
+          'ExtractDialogText="Extraindo arquivos..."',
+          'GUIFlags="8+32+64+256+4096"',
+          'GUIMode="1"',
+          'OverwriteMode="2"',
+          ';!@InstallEnd@!'
+        )
+        Set-Content -Path config.txt -Value $linhasConfig -Encoding utf8NoBOM
+
+    - name: Montar o instalador (.exe autoextraível)
+      shell: cmd
+      run: copy /b "C:\Program Files\7-Zip\7z.sfx" + config.txt + AtualizadorAutomatico.7z InstalarAtualizadorERP.exe
+
+    - name: Conferir o instalador gerado
+      shell: pwsh
+      run: |
+        # copy /b em binario nao falha alto se um dos pedacos nao existir -- confere de
+        # verdade que o resultado e' maior que a soma dos dois primeiros pedacos (ou
+        # seja, que o .7z de verdade entrou na conta, nao so o cabecalho do SFX).
+        if (-not (Test-Path "InstalarAtualizadorERP.exe")) { throw "InstalarAtualizadorERP.exe nao foi gerado." }
+        $tamanhoInstalador = (Get-Item "InstalarAtualizadorERP.exe").Length
+        $tamanho7z = (Get-Item "AtualizadorAutomatico.7z").Length
+        if ($tamanhoInstalador -le $tamanho7z) {
+          throw "InstalarAtualizadorERP.exe ($tamanhoInstalador bytes) nao ficou maior que o AtualizadorAutomatico.7z ($tamanho7z bytes) -- o modulo SFX/config provavelmente nao entrou na concatenacao."
+        }
+        Write-Host "InstalarAtualizadorERP.exe gerado com $([math]::Round($tamanhoInstalador/1MB,1)) MB."
+
+    # Troca actions/upload-artifact por uma Release: artefato do Actions SEMPRE vem
+    # embrulhado num .zip extra ao baixar (arquivo dentro de arquivo, sem como desligar),
+    # mas um asset de Release e' servido cru -- baixa o .exe e pronto, sem descompactar
+    # nada antes de chegar no instalador. Tag fixa "latest", sempre sobrescrita: um link
+    # estavel (.../releases/latest/download/InstalarAtualizadorERP.exe) que sempre aponta
+    # pro build mais recente da main, sem acumular uma release por push.
+    - name: Publicar a release "latest" com o instalador
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload latest InstalarAtualizadorERP.exe --repo "$GITHUB_REPOSITORY" --clobber
+        else
+          gh release create latest InstalarAtualizadorERP.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Atualizador ERP (build mais recente da main)" \
+            --notes "Publicado automaticamente a cada push na main. Baixe e execute InstalarAtualizadorERP.exe dentro da pasta do cliente -- ele extrai a pasta Atualizador\\ ao lado."
+        fi
