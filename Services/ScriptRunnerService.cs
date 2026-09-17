@@ -72,6 +72,21 @@ public class ScriptRunnerService
     /// </summary>
     public async Task<int> RunPendingScriptsAsync(string dbPath, string pacotesPath, string codigoCliente, string sistema, CancellationToken cancellationToken = default)
     {
+        // Roda o lote inteiro duas vezes: um script pode depender de um objeto que só é criado
+        // por outro script mais adiante na mesma leva -- ordem alfabética do nome do arquivo nem
+        // sempre bate com ordem de dependência real. A segunda passada só tenta de novo o que
+        // ainda não foi registrado em SCRIPTS na primeira (mesmo check de sempre) -- os que já
+        // aplicaram são pulados na hora, sem rodar isql de novo à toa. Um script com falha
+        // permanente (ex.: nome de tabela errado) falha e é reportado à API nas duas passadas --
+        // aceito pela simplicidade: melhor relatar de novo do que arriscar mascarar uma falha
+        // real só pra evitar um SendLog duplicado. O retorno reflete a 2ª passada, que é o estado
+        // final de verdade (quantos ainda ficaram pendentes depois de dar a segunda chance).
+        await RunPendingScriptsUmaPassadaAsync(dbPath, pacotesPath, codigoCliente, sistema, cancellationToken);
+        return await RunPendingScriptsUmaPassadaAsync(dbPath, pacotesPath, codigoCliente, sistema, cancellationToken);
+    }
+
+    private async Task<int> RunPendingScriptsUmaPassadaAsync(string dbPath, string pacotesPath, string codigoCliente, string sistema, CancellationToken cancellationToken)
+    {
         var scripts = Directory.GetFiles(pacotesPath, "*.sql", SearchOption.AllDirectories)
             .Where(caminho => EhScriptRaiz(pacotesPath, caminho))
             .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)

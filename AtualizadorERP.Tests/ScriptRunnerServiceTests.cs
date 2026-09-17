@@ -27,6 +27,39 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_que_depende_de_outro_mais_adiante_na_ordem_alfabetica_aplica_na_segunda_passada()
+    {
+        // Pedido real: alguns scripts dependem de um objeto que só é criado por outro script mais
+        // adiante na MESMA leva -- ordem alfabética do nome do arquivo (o critério de execução)
+        // nem sempre bate com ordem de dependência real. "A_..." roda antes de "B_...", mas
+        // A_Cria_tabela_filha.sql referencia (via FOREIGN KEY) uma tabela que só
+        // B_Cria_tabela_pai.sql cria -- falha na 1ª passada, mas B já aplicou nela, então a 2ª
+        // passada (que RunPendingScriptsAsync roda sozinho) pega o A de novo e aplica limpo.
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(pasta, "A_Cria_tabela_filha.sql"),
+                "CREATE TABLE TABELA_FILHA_TESTE (ID INTEGER, ID_PAI INTEGER, FOREIGN KEY (ID_PAI) REFERENCES TABELA_PAI_TESTE(ID));");
+            File.WriteAllText(
+                Path.Combine(pasta, "B_Cria_tabela_pai.sql"),
+                "CREATE TABLE TABELA_PAI_TESTE (ID INTEGER PRIMARY KEY);");
+
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            var aplicados = new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo);
+            Assert.Contains("A_Cria_tabela_filha.sql", aplicados);
+            Assert.Contains("B_Cria_tabela_pai.sql", aplicados);
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Aplica_script_novo_e_registra_em_SCRIPTS()
     {
         using var junior = FirebirdTestDatabase.CriarJunior();
