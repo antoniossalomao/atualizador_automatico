@@ -12,11 +12,13 @@ demais, copia e distribui os arquivos sem interromper o banco.
 > confirmado campo a campo contra um arquivo real correto, e o ciclo completo
 > (Fase 1 → Fase 3 → Fase 4, com Fase 2 simulada) já rodou de ponta a ponta
 > várias vezes contra Firebird real -- ver [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md).
-> Ainda **não deve rodar em cliente real com sistemas que executam scripts**:
-> falta a Fase 2 (autorização pelo ERP Delphi) e a triagem dos scripts antigos
-> que já foram aplicados fora do controle da tabela `SCRIPTS`. Leia
-> [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md) antes de qualquer coisa -- é o
-> documento mais importante deste repositório.
+> O `ScriptRunnerService` já foi validado contra o pacote real de scripts do
+> B_Vendas (mais de 1000 arquivos, incluindo uma cópia completa de produção) e
+> os problemas encontrados foram corrigidos ou isolados via `SCRIPTS_IGNORADOS`
+> -- ainda assim, **não deve rodar em cliente real com sistemas que executam
+> scripts**: falta a Fase 2 (autorização pelo ERP Delphi), que **não existe
+> neste repositório**. Leia [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md) antes
+> de qualquer coisa -- é o documento mais importante deste repositório.
 
 ## Como funciona
 
@@ -31,6 +33,23 @@ reage ao campo `STATUS` da linha correspondente na tabela `SYS_ATUALIZACAO`, no
 | `PENDENTE` | Pacote baixado, esperando o usuário autorizar | Agente |
 | `AUTORIZADO` | Usuário confirmou; pode executar | **ERP Delphi** |
 | `PROCESSANDO` | Execução crítica em andamento | Agente |
+
+Se o agente for derrubado no meio de uma Fase 3/4 (queda de energia, serviço
+parado à força), `PROCESSANDO` fica gravado sem ninguém terminar o ciclo. No
+próximo ciclo o próprio agente detecta isso e retoma do zero, como se fosse
+`AUTORIZADO` — o processo inteiro é seguro de repetir (backup pré antigo é
+descartado, scripts já aplicados são pulados).
+
+Sistemas **sem** script (ex.: `B_NFe`) não passam pela Fase 2 (não há nada
+pra autorizar), mas esperam que algum sistema **com** script deste cliente
+(normalmente `B_Vendas`) tenha **concluído com sucesso** a própria Fase 3/4 —
+não só sido autorizado. Só nesse
+momento é que a atualização pendente de cada sistema sem script é aplicada
+(troca de executável, sem tocar no `JUNIOR.fdb`). Isso evita trocar o `.exe`
+de um sistema sem coordenação nenhuma enquanto um terminal pode estar com ele
+aberto; clientes sem nenhum sistema com script instalado não têm essa espera
+(aplicam direto, já que não existe nenhuma janela de manutenção pra
+esperar).
 
 ### Fase 1 — Preparo invisível
 Consulta a API com código do cliente, sistema e versão atual; se houver versão
@@ -51,6 +70,13 @@ essa fase é simulada gravando `AUTORIZADO` direto no banco via `isql`.
 processo `isql` isolado por arquivo — ver
 [RISCOS-CONHECIDOS.md](RISCOS-CONHECIDOS.md)) → injeção dos binários no
 `BEXE.fdb` → `gfix -online` → `gbak` (backup pós, já com o banco de volta ao ar).
+
+O lote de scripts roda **duas vezes** de ponta a ponta: alguns scripts
+legados dependem de um objeto que só é criado por outro script mais adiante
+na mesma leva (ordem alfabética do nome do arquivo nem sempre bate com ordem
+de dependência real). A segunda passada só tenta de novo o que ainda não
+ficou registrado como aplicado na primeira — o que já aplicou é pulado sem
+rodar `isql` de novo.
 
 ### Fase 4 — Distribuição
 Grava os executáveis novos como BLOB na tabela `EXECUTAVEIS` do `BEXE.fdb`
@@ -143,6 +169,7 @@ Notas.
 | `CODIGO_CLIENTE` | — | **sim** |
 | `SISTEMAS` | — | **sim** |
 | `SISTEMAS_COM_SCRIPT` | vazio | |
+| `SCRIPTS_IGNORADOS` | preenchido (scripts legados quebrados do B_Vendas) | |
 | `API_TOKEN` | — | **sim** |
 | `DB_PASSWORD` | — | **sim** |
 | `API_URL` | `http://localhost:3000/api` | |
@@ -158,10 +185,13 @@ Notas.
 | `BACKUPS_PARA_MANTER` | `10` | |
 
 Faltando qualquer uma das obrigatórias, o agente falha ao subir — é
-intencional, para não rodar meio configurado. `atualizador.ini` **nunca** deve
-ser commitado (tem credencial de verdade); já está coberto pelo `.gitignore`
-deste repositório (`*.ini`). O `.example`, sem segredo nenhum, é o único dos
-dois que fica versionado.
+intencional, para não rodar meio configurado. Também falha ao subir se
+`DB_PORT` não for um número, ou se `GFIX_PATH`/`GBAK_PATH`/`ISQL_PATH`
+apontarem pra um arquivo que não existe — melhor descobrir isso na
+inicialização do que no meio de uma janela de manutenção real, com o banco já
+em shutdown. `atualizador.ini` **nunca** deve ser commitado (tem credencial de
+verdade); já está coberto pelo `.gitignore` deste repositório (`*.ini`). O
+`.example`, sem segredo nenhum, é o único dos dois que fica versionado.
 
 `API_TOKEN` precisa bater com o `AGENT_API_TOKEN` do servidor.
 
@@ -187,6 +217,19 @@ ERP, shutdown e backups. Qualquer sistema ausente dessa lista segue o fluxo de
 troca de arquivos, mesmo que seu pacote contenha `.sql`; essa decisão nunca é
 inferida pelo conteúdo do pacote. Veja os exemplos comentados em
 [atualizador.ini.example](atualizador.ini.example).
+
+`SCRIPTS_IGNORADOS` é a lista opcional (por nome de arquivo, sem caminho) de
+scripts `.sql` que o agente nunca deve tentar rodar, mesmo pendentes — pra
+scripts legados quebrados de origem (corpo de procedure salvo sem o próprio
+cabeçalho, nome de tabela que não bate mais com o schema real etc.), onde
+nenhuma correção automática resolve porque o arquivo em si está incompleto ou
+desatualizado. Nunca roda, nunca reporta erro, fica pendente pra sempre até
+alguém corrigir o arquivo de origem e tirar da lista. O `.example` já vem com
+um conjunto de scripts legados do próprio B_Vendas confirmados quebrados
+rodando o pacote real de scripts contra uma cópia de produção — o mesmo
+histórico se repete em qualquer instalação do produto. Se um cliente
+específico corrigir a própria cópia de um desses arquivos, tire o nome dessa
+lista no `.ini` **desse cliente** (não no `.example`).
 
 > A porta `3050` é o padrão do Firebird, mas ambientes reais usam outras — um
 > `BScript.Ini` de produção inspecionado usava `3051`. Confira antes.
@@ -292,7 +335,7 @@ Services/ConfiguracaoAgente.cs    lê e valida atualizador.ini, resolve caminhos
 Services/ApiService.cs            HTTP com a API central, validação de SHA-256
 Services/DatabaseService.cs       Firebird: estado em SYS_ATUALIZACAO, injeção de BLOB no BEXE
 Services/ExtractionService.cs     invoca o 7za.exe sobre os pacotes baixados
-Services/ScriptRunnerService.cs   aplica os .sql pendentes do pacote via isql, um processo por arquivo
+Services/ScriptRunnerService.cs   aplica os .sql pendentes do pacote via isql, um processo por arquivo, em 2 passadas
 Services/ProcessService.cs        executa processos externos com timeout obrigatório
 ```
 

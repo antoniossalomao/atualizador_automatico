@@ -2,13 +2,18 @@
 
 Levantado por leitura linha a linha do código e por engenharia reversa dos
 binários e da base de produção reais (`BScript.exe`, `BEXE.FDB`, `BScript.Ini` e
-os scripts DDL). Última revisão: **03/09/2026** — nesta revisão, o ciclo
-completo (Fase 1 → Fase 3 → Fase 4, com Fase 2 simulada) rodou de ponta a ponta
-pela primeira vez **passando pela API real** (não uma cópia manual de pacote) e
-como serviço Windows instalado de verdade, contra a cópia real de 366 tabelas
-(`JUNIOR_.FDB`) + `BEXE.FDB`; e o formato gravado em `EXECUTAVEIS` foi corrigido
-depois de comparado campo a campo contra um `BEXE.fdb` real e correto
-(`BEXE_certo.FDB`) -- ver os itens de 03/09/2026 abaixo.
+os scripts DDL). Última revisão: **17/09/2026** — nesta revisão, o
+`ScriptRunnerService` foi validado contra o pacote real de scripts do B_Vendas
+(1027 arquivos) e uma cópia completa de produção do `JUNIOR.fdb`, revelando e
+corrigindo quatro bugs reais de execução de script, além de uma revisão de
+robustez do `Worker`/`ConfiguracaoAgente` -- ver "Achados de 16-17/09/2026"
+abaixo. Antes disso, em 03/09/2026, o ciclo completo (Fase 1 → Fase 3 → Fase 4,
+com Fase 2 simulada) tinha rodado de ponta a ponta pela primeira vez **passando
+pela API real** (não uma cópia manual de pacote) e como serviço Windows
+instalado de verdade, contra a cópia real de 366 tabelas (`JUNIOR_.FDB`) +
+`BEXE.FDB`; e o formato gravado em `EXECUTAVEIS` foi corrigido depois de
+comparado campo a campo contra um `BEXE.fdb` real e correto (`BEXE_certo.FDB`)
+-- ver os itens de 03/09/2026 abaixo.
 
 ---
 
@@ -420,6 +425,141 @@ Cinco melhorias pontuais em [`Services/ApiService.cs`](Services/ApiService.cs), 
 
 ---
 
+## ✅ Achados de 16-17/09/2026: scripts legados reais, gating do NFe, duas passadas e robustez do Worker
+
+O `ScriptRunnerService` foi testado pela primeira vez contra o pacote **real**
+de scripts do B_Vendas (1027 arquivos "raiz", 2302 no total) e, depois, contra
+uma cópia completa de produção (`JUNIOR.fdb` real, 367 tabelas, 2343 scripts
+já registrados) que o cliente forneceu pra teste. Essa rodada revelou bugs que
+nenhum script sintético pequeno pegaria, e motivou uma revisão de robustez
+mais ampla do `Worker.cs`.
+
+### Erros de "objeto já existe" não são mais reportados à API
+
+`ScriptRunnerService` agora reconhece dois formatos de mensagem do Firebird
+pra "esse objeto já existe" — o amigável (`"... already exists"`, usado por
+`TABLE`/`VIEW`/`PROCEDURE`) e o de baixo nível (`"unsuccessful metadata
+update"` + `"attempt to store duplicate value"`, usado por
+`GENERATOR`/`EXCEPTION`, que nunca dizem "already exists" em lugar nenhum) — e
+registra o script como aplicado sem reportar erro nenhum, cobrindo o mesmo
+cenário do item 1 (script rodado décadas atrás, nunca registrado em
+`SCRIPTS`) pra tipos de DDL que a verificação prévia não reconhece.
+
+### Sistemas sem script esperam a CONCLUSÃO do sistema com script, não só a autorização
+
+Cenário motivador: `B_NFe` não pode trocar de executável sozinho e em
+silêncio enquanto um terminal pode estar com ele aberto emitindo nota fiscal.
+Antes, um sistema sem script só esperava a *autorização* de um sistema com
+script (ex.: `B_Vendas`) pra sair de `PENDENTE` — mas autorização não é
+garantia de sucesso. Agora `Worker.AplicarPendentesSemScriptAsync` só varre e
+aplica os sistemas sem script pendentes **depois** que a Fase 3/4 do sistema
+com script terminou com **sucesso confirmado** (depois de
+`ConfirmarVersaoAtual`, não no momento da autorização) — se o sistema com
+script falhar e reverter, os sistemas sem script continuam esperando, em vez
+de ficar numa versão nova com o `JUNIOR.fdb` de volta na antiga. Clientes sem
+nenhum sistema com script instalado (`Worker.ExisteSistemaComScriptInstalado`
+== `false`) não têm essa espera — aplicam direto, já que não existe nenhuma
+janela de manutenção pra esperar.
+
+### Scripts legados: quatro bugs reais encontrados testando contra dados de produção
+
+- **Faltava `;` final.** Scripts legados sem o terminador de comando (que
+  `BScript.exe`/IBExpert toleram, mas o `isql` não) falhavam com "unexpected
+  end of command". `PrepararScriptParaIsqlAsync` agora garante o `;` antes de
+  rodar, se o script ainda não terminar com um.
+- **Corpo de trigger/procedure sem `SET TERM` próprio.** O terminador padrão
+  do `isql` (`;`) quebra no primeiro `;` de *dentro* do corpo
+  `BEGIN...END`, gerando uma cascata de erros de sintaxe em vez de um erro
+  só. `PrepararScriptParaIsqlAsync` agora detecta
+  `CREATE/ALTER/RECREATE TRIGGER|PROCEDURE`/`EXECUTE BLOCK` sem `SET TERM`
+  próprio e envolve automaticamente com `SET TERM ^ ; ... ^ SET TERM ; ^`.
+  Duas regressões apareceram e foram corrigidas na mesma leva de testes:
+  envolver o **arquivo inteiro** quebrava scripts com `DROP`/`SET SQL
+  DIALECT`/`SET NAMES` *antes* do `CREATE OR ALTER TRIGGER` (o `;` desses
+  comandos virava texto dentro do `^`); e o regex original casava "ALTER
+  TRIGGER" a partir do meio de "CREATE OR ALTER TRIGGER" em vez do "CREATE"
+  (busca pela posição mais à esquerda falhando no primeiro ponto de tentativa
+  e recomeçando mais adiante), cortando o comando ao meio. Um terceiro caso —
+  **duas definições no mesmo arquivo** — foi encontrado só depois, numa
+  revisão de código (17/09/2026): a correção original envolvia do primeiro
+  match até o fim do arquivo como um bloco só; agora cada match vira seu
+  próprio bloco `SET TERM`.
+- **Faltava o charset do `isql`.** Scripts `_ANSI` legados (que declaram
+  `SET NAMES ISO8859_1` no próprio conteúdo) falhavam com "Malformed string"
+  porque o `isql` conectava sem charset explícito. Corrigido com `-ch
+  ISO8859_1` nos argumentos do processo — mesmo charset que
+  `DatabaseService.GetConnectionString` já usa.
+- **Scripts legados genuinamente quebrados de origem** (nome de tabela que
+  não bate mais com o schema real, coluna/constraint já removida
+  manualmente, corpo de procedure salvo sem o cabeçalho) não têm conserto
+  automático possível — nova chave `SCRIPTS_IGNORADOS` (ver README.md) marca
+  esses pra nunca rodar e nunca reportar erro. O `.example` já vem com ~20
+  nomes confirmados quebrados rodando o pacote real do B_Vendas contra a
+  cópia de produção — o mesmo histórico se repete em qualquer instalação do
+  produto.
+
+### Lote de scripts roda duas vezes
+
+Alguns scripts dependem de um objeto criado por outro script mais adiante na
+mesma leva — ordem alfabética do nome do arquivo nem sempre bate com ordem de
+dependência real. `RunPendingScriptsAsync` agora roda o pacote inteiro do
+zero, duas vezes; a segunda passada só tenta de novo o que não ficou
+registrado como aplicado na primeira (o resto é pulado sem rodar `isql` de
+novo). Confirmado com um pacote real de cliente (`ACQUA MARINE`): 5
+dependências fora de ordem se resolveram sozinhas entre a 1ª e a 2ª passada
+do mesmo ciclo, e mais algumas entre ciclos consecutivos (via a retentativa
+de scripts pendentes que já existia).
+
+### Instalador publicado como `.exe` autoextraível via GitHub Release
+
+O CI ([build.yml](.github/workflows/build.yml)) publicava um artefato do
+GitHub Actions contendo um `.7z` — todo download de artefato do Actions vem
+embrulhado num `.zip` extra, sem como desligar isso, resultando em compactado
+dentro de compactado. Agora o CI monta um `.exe` autoextraível de verdade
+(módulo SFX do 7-Zip + `.7z` concatenados em binário, igual o próprio
+instalador do B_Vendas) e publica numa release `latest` sempre sobrescrita —
+ver "Instalando num cliente" no README.md.
+
+### Revisão de robustez do `Worker`/`ConfiguracaoAgente` (17/09/2026)
+
+Quatro achados de uma revisão de código completa, cada um com teste cobrindo
+o cenário:
+
+- **`PROCESSANDO` travado pra sempre.** Se o processo do agente morre entre o
+  `gfix -shut` e o `gfix -online` (queda de energia, serviço parado à força —
+  não uma exceção .NET que o `catch` normal trataria), `STATUS` ficava
+  `PROCESSANDO` indefinidamente: nenhum ramo de `ProcessarSistemaAsync`
+  tratava esse status, o sistema era silenciosamente pulado em todo ciclo
+  seguinte, e o `JUNIOR.fdb` podia ficar em shutdown multiusuário sem
+  ninguém tentando religar. Agora `PROCESSANDO` é tratado como `AUTORIZADO` —
+  o processo inteiro já era seguro de repetir do zero (backup pré antigo é
+  descartado, scripts já aplicados são pulados), então repetir já é a própria
+  recuperação.
+- **Limpeza pós-sucesso podia reverter uma atualização já confirmada.**
+  `ArquivarBackups`, a limpeza da pasta de pacotes e
+  `AplicarPendentesSemScriptAsync` rodavam dentro do mesmo `try` que o
+  `catch` de rollback destrutivo guarda — mesmo já acontecendo **depois** de
+  `ConfirmarVersaoAtual` e do `SendLog "SUCESSO"`. Uma falha ali (antivírus
+  segurando o `.fbk`, disco cheio no HD de backups) caía nesse `catch`, que
+  restaura o banco pelo backup PRÉ-atualização, revertendo silenciosamente
+  uma atualização que já tinha dado certo. Agora esse bookkeeping tem seu
+  próprio `try/catch`, que só loga um aviso — a atualização confirmada nunca
+  mais é revertida por causa de uma falha só de limpeza.
+- **`GFIX_PATH`/`GBAK_PATH`/`ISQL_PATH`/`DB_PORT` nunca eram validados.**
+  `ConfiguracaoAgente` não conferia se os caminhos das ferramentas do
+  Firebird existiam, nem se `DB_PORT` era numérico — um caminho errado só
+  aparecia no meio de um ciclo real, agravando o achado acima (se `GFIX_PATH`
+  está errado, a tentativa de recuperação também falha). Agora falha rápido,
+  na inicialização, com mensagem apontando a chave errada.
+
+**Testes:** a suíte foi de 25 pra 39 testes (`AtualizadorERP.Tests/`), um novo
+por cada achado desta seção, mais os 2 testes de `WorkerIntegrationTests.cs`
+que sempre falhavam (desatualizados desde o refactor `SISTEMA -> SISTEMAS` de
+10/09/2026: pasta de pacotes esperada sem a subpasta por sistema, e uma
+chamada por reflection com a contagem de parâmetros antiga).
+
+---
+
 ## ⚪ Pendências de ambiente (não corrigíveis só com código)
 - **Fase 2 (Delphi) não existe.** Não há nenhum `.pas`/`.dpr`. Ler `PENDENTE`,
   perguntar ao usuário e gravar `AUTORIZADO` ainda precisa ser escrito no ERP. Nos
@@ -443,13 +583,21 @@ Cinco melhorias pontuais em [`Services/ApiService.cs`](Services/ApiService.cs), 
   padrão; confirmado que funciona pro `B_Vendas.exe` real (`openssl.exe` não conta
   mais, ver item 15), mas não há confirmação de que os terminais leem esse campo
   (em vez de `NOMEARQUIVO`) pra decidir o que baixar.
-- **Testes de integração automatizados.** Existem 25, cobrindo `ProcessService`,
-  `DatabaseService`, `ScriptRunnerService` e o ciclo completo do `Worker`
-  (`AtualizadorERP.Tests/`, contra Firebird real, não mockado) — inclusive o
-  formato de `EXECUTAVEIS` confirmado no item 16 e a retenção de backups do
-  item 18. Ainda não cobrem: Fase 1 completa contra a API real (o teste de
-  03/09/2026 que validou isso foi manual, não faz parte da suíte), nem os
-  ~2300 scripts reais de um `Scripts-BVendas` de produção (os testes usam
-  scripts sintéticos pequenos) — vale repetir o ciclo completo manual contra
-  cópias descartáveis dos bancos reais antes de qualquer mudança futura maior
-  no `Worker.cs`/`DatabaseService.cs`.
+- **Testes de integração automatizados.** Existem 39, cobrindo `ProcessService`,
+  `DatabaseService`, `ScriptRunnerService`, `ConfiguracaoAgente` e o ciclo
+  completo do `Worker` (`AtualizadorERP.Tests/`, contra Firebird real, não
+  mockado) — inclusive o formato de `EXECUTAVEIS` confirmado no item 16, a
+  retenção de backups do item 18, o gating do NFe, a recuperação de
+  `PROCESSANDO` e os achados de 16-17/09/2026 sobre scripts legados. Ainda não
+  cobrem: Fase 1 completa contra a API real (o teste de 03/09/2026 que validou
+  isso foi manual, não faz parte da suíte), nem os ~2300 scripts reais de um
+  `Scripts-BVendas` de produção de ponta a ponta (os testes automatizados usam
+  scripts sintéticos pequenos; a validação contra scripts reais em
+  16-17/09/2026 foi manual, com testes descartáveis nunca commitados) — vale
+  repetir esse ciclo manual contra cópias descartáveis dos bancos reais antes
+  de qualquer mudança futura maior no `Worker.cs`/`DatabaseService.cs`/
+  `ScriptRunnerService.cs`. A suíte completa também tem uma flakiness de
+  ambiente conhecida: rodando sem filtro, 1 em cada 3-4 execuções falha com um
+  erro de conexão TCP ao Firebird local (não um `Assert` de lógica) — sempre
+  um teste diferente, sempre resolvido rodando de novo ou com `--filter`
+  isolando o teste suspeito.
