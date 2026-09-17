@@ -106,9 +106,19 @@ public class ConfiguracaoAgente
         ApiUrl = ComDefault(valores, "API_URL", "http://localhost:3000/api");
         DbUser = ComDefault(valores, "DB_USER", "SYSDBA");
         DbPort = ComDefault(valores, "DB_PORT", "3050");
+        if (!int.TryParse(DbPort, out _))
+            throw new InvalidOperationException($"DB_PORT inválido em {caminhoIni}: '{DbPort}' -- precisa ser um número de porta (ex.: 3050).");
+
         GfixPath = ComDefault(valores, "GFIX_PATH", @"C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gfix.exe");
         GbakPath = ComDefault(valores, "GBAK_PATH", @"C:\Program Files (x86)\Firebird\Firebird_2_5\bin\gbak.exe");
         IsqlPath = ComDefault(valores, "ISQL_PATH", @"C:\Program Files (x86)\Firebird\Firebird_2_5\bin\isql.exe");
+        // Falha aqui, na inicialização, em vez de deixar o caminho errado só aparecer no meio de
+        // um ciclo real (gfix -shut já rodou, banco em shutdown, aí o gfix/gbak seguinte nem
+        // consegue iniciar) -- ExtractionService já faz o mesmo tipo de checagem pro caminho do
+        // 7zip antes de usar.
+        ValidarFerramenta(GfixPath, "GFIX_PATH", caminhoIni);
+        ValidarFerramenta(GbakPath, "GBAK_PATH", caminhoIni);
+        ValidarFerramenta(IsqlPath, "ISQL_PATH", caminhoIni);
 
         JuniorFdbPath = CaminhoComDefault(valores, "JUNIOR_FDB", pastaAgente, "..", "JUNIOR.FDB");
         BexeFdbPath = CaminhoComDefault(valores, "BEXE_FDB", pastaAgente, "..", "BEXE.FDB");
@@ -146,6 +156,14 @@ public class ConfiguracaoAgente
         PastaTrabalho = pastaTrabalho;
         PastaBackups = pastaBackups;
         BackupsParaManter = backupsParaManter;
+    }
+
+    private static void ValidarFerramenta(string caminho, string chave, string caminhoIni)
+    {
+        if (!File.Exists(caminho))
+            throw new InvalidOperationException(
+                $"{chave} aponta para um arquivo que não existe: '{caminho}' (definido em {caminhoIni} ou usando o " +
+                "default). Confira o caminho de instalação do Firebird 2.5 neste cliente.");
     }
 
     private static string Obrigatorio(Dictionary<string, string> valores, string chave, string caminhoIni)

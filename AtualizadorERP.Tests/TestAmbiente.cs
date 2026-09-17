@@ -54,4 +54,9 @@ public static class TestAmbiente
             backupsParaManter: backupsParaManter,
             scriptsIgnorados: scriptsIgnorados);
     }
+
+    // Só pros testes de ConfiguracaoAgenteTests, que precisam exercitar o construtor que LÊ um
+    // "atualizador.ini" de verdade (validação de DB_PORT/GFIX_PATH/GBAK_PATH/ISQL_PATH acontece só
+    // nele, não no construtor de teste acima).
+    public static ConfiguracaoAgente NovaConfiguracaoDeArquivo(string caminhoIni) => new(caminhoIni);
 }
