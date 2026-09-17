@@ -115,6 +115,18 @@ public class ScriptRunnerService
             {
                 await RunIsqlAsync(dbPath, scriptPath, cancellationToken);
             }
+            catch (Exception ex) when (ObjetoJaExisteNoErro(ex))
+            {
+                // Cobre o mesmo cenário do pré-check em VerificarObjetoDdl (objeto criado décadas
+                // atrás, nunca registrado em SCRIPTS), mas para tipos de DDL que o pré-check não
+                // reconhece (CREATE EXCEPTION, CREATE PROCEDURE etc.) -- ali "reconhecido" já vem
+                // false, então o isql roda de verdade e é ELE quem revela que o objeto já existe.
+                // Não é falha genuína: sincroniza o controle com a realidade do banco, sem poluir
+                // o relatório da API com um erro que nunca foi pendência de verdade.
+                _logger.LogInformation("Script {nome}: objeto já existe no banco (isql: {mensagem}) -- registrando como aplicado sem reportar à API.", nomeArquivo, ex.Message);
+                _databaseService.RegistrarScriptAplicado(dbPath, nomeArquivo);
+                continue;
+            }
             catch (Exception ex)
             {
                 string relatorio = MontarRelatorioErro(nomeArquivo, posicao, scripts.Count, jaAplicadosAntes, reconhecido, descricao, ex);
@@ -147,6 +159,22 @@ public class ScriptRunnerService
         string relativo = Path.GetRelativePath(pacotesPath, caminhoScript);
         int separadores = relativo.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar);
         return separadores <= 1;
+    }
+
+    // Firebird responde em inglês independente do locale da instância, mas nem todo tipo de
+    // objeto duplicado usa a mensagem amigável -- confirmado contra o Firebird 2.5 real desta
+    // máquina: CREATE TABLE/VIEW/PROCEDURE duplicado dá "-Table X already exists", mas CREATE
+    // GENERATOR/EXCEPTION duplicado cai direto no erro de baixo nível da violação do índice único
+    // do catálogo de sistema ("unsuccessful metadata update" + "attempt to store duplicate value
+    // ... in unique index"), sem a palavra "already exists" em lugar nenhum.
+    private static bool ObjetoJaExisteNoErro(Exception ex)
+    {
+        string mensagem = ex.Message;
+        if (mensagem.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return mensagem.Contains("unsuccessful metadata update", StringComparison.OrdinalIgnoreCase)
+            && mensagem.Contains("attempt to store duplicate value", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string MontarRelatorioErro(string nomeArquivo, int posicao, int total, int jaAplicadosAntes, bool reconhecido, string descricaoDdl, Exception erroOriginal)

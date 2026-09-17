@@ -95,6 +95,32 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_de_tipo_nao_reconhecido_cujo_objeto_ja_existe_e_marcado_aplicado_sem_reportar_erro()
+    {
+        // Mesmo cenário legado do teste acima (objeto criado décadas atrás, nunca registrado em
+        // SCRIPTS), mas para um tipo de DDL fora da lista de VerificarObjetoDdl (CREATE EXCEPTION)
+        // -- o pré-check não pega, então é o isql quem roda de verdade e retorna "already exists".
+        // Isso não pode virar falha reportada à API: é sincronizar o controle com a realidade do
+        // banco, igual ao caso reconhecido.
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            junior.ExecutarNaoConsulta("CREATE EXCEPTION EXC_LEGADA 'mensagem legada';");
+            File.WriteAllText(Path.Combine(pasta, "Cria_exception_legada.sql"), "CREATE EXCEPTION EXC_LEGADA 'mensagem legada';");
+
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            Assert.Contains("Cria_exception_legada.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Script_quebrado_nao_trava_o_lote_e_e_reportado_como_falha()
     {
         using var junior = FirebirdTestDatabase.CriarJunior();

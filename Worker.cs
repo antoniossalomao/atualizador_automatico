@@ -93,10 +93,13 @@ public class Worker : BackgroundService
     private bool SistemaInstalado(SistemaConfigurado sistema) => File.Exists(Path.Combine(PastaCliente, sistema.NomeExeEsperado));
 
     /// <summary>Processa um sistema por vez: Fase 1 (checar/baixar) e, dependendo do estado atual,
-    /// ou marca PENDENTE (sistemas com script, esperando Fase 2) ou aplica direto (sistemas sem
-    /// script -- ver <see cref="ConfiguracaoAgente.SistemasComScript"/>), ou roda a Fase 3/4
-    /// completa se já estiver AUTORIZADO. Nunca deixa uma exceção subir: cada sistema tem seu
-    /// próprio try/catch, e o retorno (sucesso/falha) só alimenta o backoff agregado do
+    /// ou marca PENDENTE (sistemas com script, sempre; sistemas sem script também, se o cliente
+    /// tiver algum sistema com script instalado -- ver <see cref="ExisteSistemaComScriptInstalado"/>)
+    /// ou aplica direto (sistemas sem script, só quando não há nenhum sistema com script instalado
+    /// neste cliente), ou roda a Fase 3/4 completa se já estiver AUTORIZADO -- que, ao concluir com
+    /// sucesso, também aplica os sistemas sem script que ficaram PENDENTE (ver
+    /// <see cref="AplicarPendentesSemScriptAsync"/>). Nunca deixa uma exceção subir: cada sistema
+    /// tem seu próprio try/catch, e o retorno (sucesso/falha) só alimenta o backoff agregado do
     /// ExecuteAsync.</summary>
     private async Task<bool> ProcessarSistemaAsync(string sistema, CancellationToken stoppingToken)
     {
@@ -117,7 +120,17 @@ public class Worker : BackgroundService
                     var baixados = await _apiService.DownloadPackages(updateInfo.Packages, pastaPacotes, stoppingToken);
                     await _extractionService.ExtractAllAsync(baixados, pastaPacotes, stoppingToken);
 
-                    if (EhSistemaComScript(sistema))
+                    // "Sem script" (ex.: B_NFe) não toca no JUNIOR.fdb, mas TROCAR O EXECUTÁVEL
+                    // sozinho não é inofensivo: se o cliente tiver algum sistema COM script
+                    // instalado (normalmente B_Vendas), o agente espera ele ser autorizado antes de
+                    // aplicar qualquer coisa -- é o único sinal que o agente tem de que o cliente
+                    // coordenou uma janela de manutenção de verdade pelo painel. Aplicar direto
+                    // (como antes) arriscava sobrescrever o .exe/DLLs de um terminal com o NFe
+                    // aberto no meio de uma emissão de nota. Só quando NÃO existe nenhum sistema com
+                    // script instalado (cliente que só distribui .exe avulso) é que ainda aplica
+                    // direto -- senão esse sistema nunca teria nenhuma janela pra esperar e nunca
+                    // atualizaria.
+                    if (EhSistemaComScript(sistema) || ExisteSistemaComScriptInstalado())
                     {
                         _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "PENDENTE", updateInfo.Version);
                         // Só reportado aqui, uma vez, no instante da transição -- nos ciclos
@@ -130,9 +143,6 @@ public class Worker : BackgroundService
                     }
                     else
                     {
-                        // Sem script: não interrompe ninguém (não toca no JUNIOR.fdb), então não
-                        // faz sentido esperar autorização de usuário pra uma troca de executável
-                        // que não trava nada -- aplica direto.
                         return await AplicarAtualizacaoSemScriptAsync(sistema, pastaPacotes, updateInfo.Version, stoppingToken);
                     }
                 }
@@ -160,6 +170,12 @@ public class Worker : BackgroundService
     // nunca inferido pelo conteúdo do pacote baixado. Confirmado que pacotes de outros sistemas
     // (ex.: BImportaXML) trazem .sql junto sem ser pra rodar; rodar por engano quebra o banco.
     private bool EhSistemaComScript(string sistema) => _config.SistemasComScript.Contains(sistema, StringComparer.OrdinalIgnoreCase);
+
+    // Usado tanto pra decidir se um sistema sem script deve esperar (ver ProcessarSistemaAsync)
+    // quanto, implicitamente, garante que o próprio sistema com script sendo processado já conta
+    // como "instalado" (SistemaInstalado já foi checado por ele em ExecuteAsync antes de chegar
+    // aqui) -- não precisa de um caso especial pra ele mesmo.
+    private bool ExisteSistemaComScriptInstalado() => _config.Sistemas.Any(s => EhSistemaComScript(s.Nome) && SistemaInstalado(s));
 
     // Backoff simples: 10s no caminho saudável; cresce até 30 minutos em falhas seguidas, para
     // não martelar disco/rede/API a cada 10 segundos quando algo está persistentemente quebrado
@@ -219,6 +235,28 @@ public class Worker : BackgroundService
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "ERRO", null, ex.Message);
             await _apiService.SendLog(_config.CodigoCliente, sistema, "ERRO", ex.Message, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken, fase: faseAtual);
             return false;
+        }
+    }
+
+    /// <summary>Aplica todo sistema SEM script que esteja PENDENTE, exceto <paramref name="sistemaQueAcabouDeAtualizar"/>
+    /// (o sistema com script que acabou de concluir e disparou esta varredura). Reaproveita
+    /// exatamente o pacote já baixado/extraído em Fase 1 (nunca apagado enquanto PENDENTE, mesmo
+    /// caminho que um sistema com script usa esperando autorização) -- não baixa nada de novo.
+    /// Cada sistema aqui trata sua própria falha (mesmo contrato de AplicarAtualizacaoSemScriptAsync):
+    /// um NFe que falhar não desfaz o B_Vendas que já concluiu, nem impede outro sistema sem script
+    /// pendente de ser tentado.</summary>
+    private async Task AplicarPendentesSemScriptAsync(string sistemaQueAcabouDeAtualizar, CancellationToken stoppingToken)
+    {
+        foreach (var sistemaConfigurado in _config.Sistemas)
+        {
+            string sistema = sistemaConfigurado.Nome;
+            if (sistema.Equals(sistemaQueAcabouDeAtualizar, StringComparison.OrdinalIgnoreCase)) continue;
+            if (EhSistemaComScript(sistema)) continue;
+            if (!SistemaInstalado(sistemaConfigurado)) continue;
+            if (_databaseService.GetStatusAtualizacao(_config.JuniorFdbPath, sistema) != "PENDENTE") continue;
+
+            string versaoAlvo = _databaseService.GetVersaoAtual(_config.JuniorFdbPath, sistema);
+            await AplicarAtualizacaoSemScriptAsync(sistema, PastaPacotesDoSistema(sistema), versaoAlvo, stoppingToken);
         }
     }
 
@@ -321,6 +359,12 @@ public class Worker : BackgroundService
 
             ArquivarBackups(sistema, preBkp, posBkp, versaoAlvo);
             if (Directory.Exists(pastaPacotes)) Directory.Delete(pastaPacotes, true);
+
+            // Só agora, com a Fase 3/4 deste sistema com script CONFIRMADAMENTE concluída (não
+            // antes, no momento da autorização) -- se tivesse caído no catch abaixo e revertido
+            // pelo backup, os sistemas sem script continuariam PENDENTE em vez de ficar numa
+            // versão nova com o JUNIOR.fdb de volta na antiga.
+            await AplicarPendentesSemScriptAsync(sistema, stoppingToken);
             return true;
         }
         catch (Exception ex)

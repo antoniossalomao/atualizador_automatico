@@ -89,6 +89,83 @@ public class WorkerIntegrationTests
     }
 
     [Fact]
+    public async Task Sistema_sem_script_pendente_e_aplicado_junto_quando_sistema_com_script_conclui()
+    {
+        // Cenário motivador: o NFe não pode trocar de executável sozinho, silenciosamente, com o
+        // terminal aberto emitindo nota -- fica PENDENTE (Worker.ExisteSistemaComScriptInstalado)
+        // até o B_Vendas ser autorizado. Só quando a Fase 3/4 do B_Vendas termina com sucesso
+        // (aqui, direto via ProcessarAtualizacao) é que o NFe pendente é varrido e aplicado junto
+        // (Worker.AplicarPendentesSemScriptAsync) -- nunca antes, pra não desencontrar versões se
+        // o B_Vendas tivesse revertido.
+        const string SistemaComScript = "BVENDAS_TESTE";
+        const string SistemaSemScript = "NFE_TESTE";
+
+        using var junior = FirebirdTestDatabase.CriarJunior(sistema: SistemaComScript, status: "AUTORIZADO", versaoAtual: "1.0.0", versaoNova: "2.0.0");
+        junior.ExecutarNaoConsulta(
+            "INSERT INTO SYS_ATUALIZACAO (SISTEMA, STATUS, VERSAO_NOVA, VERSAO_ATUAL) VALUES (@sistema, @status, @versaoNova, @versaoAtual)",
+            ("@sistema", SistemaSemScript), ("@status", "PENDENTE"), ("@versaoNova", "2.0.0"), ("@versaoAtual", "1.0.0"));
+        using var bexe = FirebirdTestDatabase.CriarBexe();
+
+        string pastaTrabalho = Directory.CreateTempSubdirectory("atualizador_worker_teste_").FullName;
+        string pastaBackups = Directory.CreateTempSubdirectory("atualizador_worker_backups_").FullName;
+        string pastaCliente = Path.GetDirectoryName(Path.GetFullPath(bexe.CaminhoArquivo))!;
+
+        string pastaPacotesComScript = Path.Combine(pastaTrabalho, "pacotes", SistemaComScript);
+        Directory.CreateDirectory(pastaPacotesComScript);
+        File.WriteAllBytes(Path.Combine(pastaPacotesComScript, "bvendas_teste.exe"), new byte[] { 1, 2, 3 });
+
+        // Pacote do sistema sem script já baixado/extraído numa rodada anterior -- ficou PENDENTE
+        // esperando o com-script, sem aplicar (ver EhSistemaComScript/ExisteSistemaComScriptInstalado).
+        string pastaPacotesSemScript = Path.Combine(pastaTrabalho, "pacotes", SistemaSemScript);
+        Directory.CreateDirectory(pastaPacotesSemScript);
+        byte[] conteudoNfe = { 9, 8, 7, 6, 5 };
+        File.WriteAllBytes(Path.Combine(pastaPacotesSemScript, "nfe_teste.exe"), conteudoNfe);
+
+        // "Instalados" pra SistemaInstalado (presença do exe na pasta do cliente) -- placeholders
+        // que a própria CopiarParaPastaCliente sobrescreve com o conteúdo real do pacote.
+        File.WriteAllBytes(Path.Combine(pastaCliente, "bvendas_teste.exe"), new byte[] { 0 });
+        File.WriteAllBytes(Path.Combine(pastaCliente, "nfe_teste.exe"), new byte[] { 0 });
+
+        var sistemas = new[]
+        {
+            new SistemaConfigurado(SistemaComScript, "bvendas_teste.exe"),
+            new SistemaConfigurado(SistemaSemScript, "nfe_teste.exe"),
+        };
+        var config = TestAmbiente.NovaConfiguracao(
+            juniorFdbPath: junior.CaminhoArquivo, bexeFdbPath: bexe.CaminhoArquivo,
+            pastaTrabalho: pastaTrabalho, pastaBackups: pastaBackups,
+            sistemas: sistemas, sistemasComScript: new[] { SistemaComScript });
+
+        var databaseService = new DatabaseService(config);
+        var processService = new ProcessService(NullLogger<ProcessService>.Instance);
+        var apiService = new ApiService(NullLogger<ApiService>.Instance, config);
+        var extractionService = new ExtractionService(NullLogger<ExtractionService>.Instance, processService);
+        var scriptRunnerService = new ScriptRunnerService(NullLogger<ScriptRunnerService>.Instance, databaseService, processService, apiService, config);
+        var worker = new Worker(NullLogger<Worker>.Instance, apiService, databaseService, extractionService, processService, scriptRunnerService, config);
+
+        try
+        {
+            await worker.ProcessarAtualizacao(SistemaComScript, CancellationToken.None);
+
+            Assert.Equal("CONCLUIDO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, SistemaComScript));
+            Assert.Equal("CONCLUIDO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, SistemaSemScript));
+            Assert.Equal("2.0.0", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, SistemaSemScript));
+
+            string caminhoNfeEsperado = Path.Combine(pastaCliente, "nfe_teste.exe");
+            string hashEsperado = Convert.ToHexString(SHA1.HashData(conteudoNfe));
+            Assert.Equal(hashEsperado, bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoNfeEsperado}'"));
+            Assert.False(Directory.Exists(pastaPacotesSemScript));
+        }
+        finally
+        {
+            if (Directory.Exists(pastaTrabalho)) Directory.Delete(pastaTrabalho, true);
+            if (Directory.Exists(pastaBackups)) Directory.Delete(pastaBackups, true);
+            File.Delete(Path.Combine(pastaCliente, "bvendas_teste.exe"));
+            File.Delete(Path.Combine(pastaCliente, "nfe_teste.exe"));
+        }
+    }
+
+    [Fact]
     public void ArquivarBackups_mantem_so_os_ultimos_N_ciclos()
     {
         // Sem limpeza, cada atualização bem-sucedida deixaria 2 backups novos (pré + pós) parados
@@ -125,6 +202,48 @@ public class WorkerIntegrationTests
             if (Directory.Exists(pastaTrabalho)) Directory.Delete(pastaTrabalho, true);
             if (Directory.Exists(pastaBackups)) Directory.Delete(pastaBackups, true);
         }
+    }
+
+    [Fact]
+    public void ExisteSistemaComScriptInstalado_reflete_se_o_sistema_com_script_esta_instalado_neste_cliente()
+    {
+        // Fallback proposital: um cliente que não tem NENHUM sistema com script instalado (só
+        // distribui .exe avulso, ex.: só NFe) não tem nenhuma "janela de manutenção" pra esperar --
+        // sem isso, sistemas sem script desse cliente nunca sairiam de PENDENTE.
+        string pastaCliente = Directory.CreateTempSubdirectory("atualizador_worker_gating_").FullName;
+        try
+        {
+            var sistemas = new[]
+            {
+                new SistemaConfigurado("BVENDAS_TESTE", "bvendas_gating.exe"),
+                new SistemaConfigurado("NFE_TESTE", "nfe_gating.exe"),
+            };
+            string bexePath = Path.Combine(pastaCliente, "BEXE.FDB");
+
+            // Só o NFe instalado (exe presente), B_Vendas configurado mas ausente deste cliente --
+            // sem sistema com script instalado, deve aplicar direto (false).
+            File.WriteAllBytes(Path.Combine(pastaCliente, "nfe_gating.exe"), new byte[] { 0 });
+            var configSoNfe = TestAmbiente.NovaConfiguracao(bexeFdbPath: bexePath, sistemas: sistemas, sistemasComScript: new[] { "BVENDAS_TESTE" });
+            Assert.False(InvocarExisteSistemaComScriptInstalado(NovoWorkerParaPodar(configSoNfe)));
+
+            // Com o B_Vendas também instalado, o NFe deste mesmo cliente passa a esperar (true).
+            File.WriteAllBytes(Path.Combine(pastaCliente, "bvendas_gating.exe"), new byte[] { 0 });
+            var configComBVendas = TestAmbiente.NovaConfiguracao(bexeFdbPath: bexePath, sistemas: sistemas, sistemasComScript: new[] { "BVENDAS_TESTE" });
+            Assert.True(InvocarExisteSistemaComScriptInstalado(NovoWorkerParaPodar(configComBVendas)));
+        }
+        finally
+        {
+            Directory.Delete(pastaCliente, true);
+        }
+    }
+
+    // ExisteSistemaComScriptInstalado é privado (detalhe de implementação de ProcessarSistemaAsync,
+    // que por sua vez depende de ApiService.CheckForUpdates contra um servidor real -- inviável de
+    // testar de ponta a ponta aqui) -- via reflection só neste teste focado na decisão de gating.
+    private static bool InvocarExisteSistemaComScriptInstalado(Worker worker)
+    {
+        var metodo = typeof(Worker).GetMethod("ExisteSistemaComScriptInstalado", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        return (bool)metodo.Invoke(worker, null)!;
     }
 
     private static Worker NovoWorkerParaPodar(ConfiguracaoAgente config)
