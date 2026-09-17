@@ -152,6 +152,23 @@ public class Worker : BackgroundService
             {
                 return await ProcessarAtualizacao(sistema, stoppingToken);
             }
+            else if (statusAtual == "PROCESSANDO")
+            {
+                // Só fica PROCESSANDO durante a Fase 3/4 em andamento (ver ProcessarAtualizacao) --
+                // se o agente chega aqui vendo esse status, é porque a tentativa anterior nunca
+                // terminou de verdade (o serviço morreu no meio: crash, queda de energia, "Stop-
+                // Service" forçado -- nada que passasse pelo catch normal). Sem este ramo, o
+                // sistema ficava preso nesse status pra sempre (nenhum outro branch trata
+                // "PROCESSANDO"), e pior: se a queda foi entre o "gfix -shut" e o "gfix -online", o
+                // JUNIOR.fdb desse cliente fica em shutdown multiusuário indefinidamente, sem
+                // ninguém tentando religar. ProcessarAtualizacao já é seguro de rodar de novo do
+                // zero (apaga qualquer preBkp velho antes de recriar, scripts já aplicados são
+                // pulados pela checagem em SCRIPTS) -- então só repetir o processo já é a própria
+                // recuperação: um novo "gfix -shut" religa o fluxo normal (banco já em shutdown ou
+                // não) até chegar no "gfix -online" que faltou rodar da vez anterior.
+                _logger.LogWarning("Sistema {sistema} estava travado em PROCESSANDO -- provável queda do agente no meio de um ciclo anterior. Retomando.", sistema);
+                return await ProcessarAtualizacao(sistema, stoppingToken);
+            }
             return true;
         }
         catch (Exception ex)

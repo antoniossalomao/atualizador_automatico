@@ -93,6 +93,50 @@ public class WorkerIntegrationTests
     }
 
     [Fact]
+    public async Task Sistema_travado_em_PROCESSANDO_e_retomado_automaticamente()
+    {
+        // Achado na revisão de código (2026-09-17): se o agente morre entre "gfix -shut" e "gfix
+        // -online" (queda de energia, Stop-Service forçado -- não uma exceção .NET normal que o
+        // catch de ProcessarAtualizacao pudesse tratar), STATUS fica "PROCESSANDO" pra sempre.
+        // Antes desta correção, nenhum ramo de ProcessarSistemaAsync tratava esse status -- o
+        // sistema era silenciosamente pulado em todo ciclo seguinte (caía no "return true" final,
+        // sem log), e o JUNIOR.fdb podia ficar em shutdown multiusuário indefinidamente. Simula a
+        // queda criando o banco já com STATUS=PROCESSANDO (em vez de AUTORIZADO) e conferindo que
+        // o próprio ProcessarSistemaAsync retoma e conclui sozinho.
+        using var junior = FirebirdTestDatabase.CriarJunior(status: "PROCESSANDO", versaoAtual: "1.0.0", versaoNova: "9.9.9");
+        using var bexe = FirebirdTestDatabase.CriarBexe();
+        string pastaTrabalho = Directory.CreateTempSubdirectory("atualizador_worker_teste_").FullName;
+        string pastaBackups = Directory.CreateTempSubdirectory("atualizador_worker_backups_").FullName;
+        string pastaPacotes = NovaPastaPacotes(pastaTrabalho);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pastaPacotes, "produto_teste.exe"), new byte[] { 1, 2, 3 });
+
+            var worker = NovoWorker(junior.CaminhoArquivo, bexe.CaminhoArquivo, pastaTrabalho, pastaBackups, out var databaseService);
+
+            bool ok = await InvocarProcessarSistemaAsync(worker, Sistema);
+
+            Assert.True(ok);
+            Assert.Equal("CONCLUIDO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+            Assert.Equal("9.9.9", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
+        }
+        finally
+        {
+            if (Directory.Exists(pastaTrabalho)) Directory.Delete(pastaTrabalho, true);
+            if (Directory.Exists(pastaBackups)) Directory.Delete(pastaBackups, true);
+        }
+    }
+
+    // ProcessarSistemaAsync é privado (decide o roteamento por STATUS: CONCLUIDO/ERRO -> checa
+    // update, AUTORIZADO/PROCESSANDO -> ProcessarAtualizacao) -- via reflection só pra exercitar
+    // esse roteamento sem duplicar o setup de CheckForUpdates contra uma API real.
+    private static async Task<bool> InvocarProcessarSistemaAsync(Worker worker, string sistema)
+    {
+        var metodo = typeof(Worker).GetMethod("ProcessarSistemaAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        return await (Task<bool>)metodo.Invoke(worker, new object[] { sistema, CancellationToken.None })!;
+    }
+
+    [Fact]
     public async Task Sistema_sem_script_pendente_e_aplicado_junto_quando_sistema_com_script_conclui()
     {
         // Cenário motivador: o NFe não pode trocar de executável sozinho, silenciosamente, com o
