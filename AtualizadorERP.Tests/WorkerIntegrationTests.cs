@@ -137,6 +137,45 @@ public class WorkerIntegrationTests
     }
 
     [Fact]
+    public async Task Falha_ao_arquivar_backup_apos_sucesso_nao_reverte_a_atualizacao_ja_confirmada()
+    {
+        // Achado na revisão de código (2026-09-17): ArquivarBackups/limpeza de pacotes/aplicação
+        // de sistemas sem script pendentes rodavam dentro do MESMO try que o catch de rollback
+        // destrutivo guarda -- uma falha ali (ex.: antivírus segurando o .fbk, disco cheio no HD
+        // de backups) caía nesse catch, que restaura o JUNIOR.fdb pelo backup PRÉ-atualização,
+        // revertendo silenciosamente uma atualização que JÁ tinha sido confirmada (ConfirmarVersaoAtual
+        // e o SendLog "SUCESSO" já tinham rodado) e ainda reportando "ERRO" por cima do "SUCESSO"
+        // já enviado. Simula a falha apontando PastaBackups pra um caminho que já existe como
+        // ARQUIVO (não pasta) -- Directory.CreateDirectory dentro de ArquivarBackups lança
+        // IOException logo de cara.
+        using var junior = FirebirdTestDatabase.CriarJunior(status: "AUTORIZADO", versaoAtual: "1.0.0", versaoNova: "9.9.9");
+        using var bexe = FirebirdTestDatabase.CriarBexe();
+        string pastaTrabalho = Directory.CreateTempSubdirectory("atualizador_worker_teste_").FullName;
+        string pastaBackupsPai = Directory.CreateTempSubdirectory("atualizador_worker_backups_pai_").FullName;
+        string pastaBackupsInvalida = Path.Combine(pastaBackupsPai, "isto_e_um_arquivo_nao_uma_pasta");
+        File.WriteAllText(pastaBackupsInvalida, "arquivo no lugar onde ArquivarBackups espera uma pasta");
+        string pastaPacotes = NovaPastaPacotes(pastaTrabalho);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(pastaPacotes, "produto_teste.exe"), new byte[] { 1, 2, 3 });
+
+            var worker = NovoWorker(junior.CaminhoArquivo, bexe.CaminhoArquivo, pastaTrabalho, pastaBackupsInvalida, out var databaseService);
+
+            await worker.ProcessarAtualizacao(Sistema, CancellationToken.None);
+
+            // A atualização em si continua confirmada, na versão nova -- mesmo com o
+            // arquivamento/limpeza pós-sucesso falhando.
+            Assert.Equal("CONCLUIDO", databaseService.GetStatusAtualizacao(junior.CaminhoArquivo, Sistema));
+            Assert.Equal("9.9.9", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, Sistema));
+        }
+        finally
+        {
+            if (Directory.Exists(pastaTrabalho)) Directory.Delete(pastaTrabalho, true);
+            if (Directory.Exists(pastaBackupsPai)) Directory.Delete(pastaBackupsPai, true);
+        }
+    }
+
+    [Fact]
     public async Task Sistema_sem_script_pendente_e_aplicado_junto_quando_sistema_com_script_conclui()
     {
         // Cenário motivador: o NFe não pode trocar de executável sozinho, silenciosamente, com o

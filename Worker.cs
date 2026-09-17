@@ -374,14 +374,30 @@ public class Worker : BackgroundService
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "CONCLUIDO", null, scriptsComFalha > 0 ? mensagemFinal : null);
             await _apiService.SendLog(_config.CodigoCliente, sistema, "SUCESSO", mensagemFinal, versaoAlvo, versaoAnterior, cronometro.Elapsed, stoppingToken, fase: faseAtual);
 
-            ArquivarBackups(sistema, preBkp, posBkp, versaoAlvo);
-            if (Directory.Exists(pastaPacotes)) Directory.Delete(pastaPacotes, true);
+            // A atualização em si já está confirmada e reportada como sucesso nas duas linhas
+            // acima -- daqui pra baixo é só bookkeeping (arquivar backup, limpar pasta de pacotes,
+            // encadear sistemas sem script pendentes). Um try/catch PRÓPRIO, sem relançar: se
+            // ficasse dentro do try principal, uma falha aqui (ex.: antivírus segurando o .fbk,
+            // disco cheio no HD de backups) cairia no catch de baixo, que roda "gbak -c
+            // -replace_database" com o backup PRÉ-atualização -- revertendo silenciosamente uma
+            // atualização que já tinha dado certo e já tinha sido confirmada, e ainda reportando
+            // "ERRO" à API por cima do "SUCESSO" já enviado.
+            try
+            {
+                ArquivarBackups(sistema, preBkp, posBkp, versaoAlvo);
+                if (Directory.Exists(pastaPacotes)) Directory.Delete(pastaPacotes, true);
 
-            // Só agora, com a Fase 3/4 deste sistema com script CONFIRMADAMENTE concluída (não
-            // antes, no momento da autorização) -- se tivesse caído no catch abaixo e revertido
-            // pelo backup, os sistemas sem script continuariam PENDENTE em vez de ficar numa
-            // versão nova com o JUNIOR.fdb de volta na antiga.
-            await AplicarPendentesSemScriptAsync(sistema, stoppingToken);
+                // Só agora, com a Fase 3/4 deste sistema com script CONFIRMADAMENTE concluída (não
+                // antes, no momento da autorização) -- se tivesse caído no catch abaixo e revertido
+                // pelo backup, os sistemas sem script continuariam PENDENTE em vez de ficar numa
+                // versão nova com o JUNIOR.fdb de volta na antiga.
+                await AplicarPendentesSemScriptAsync(sistema, stoppingToken);
+            }
+            catch (Exception exPosSucesso)
+            {
+                _logger.LogWarning(exPosSucesso, "Falha na limpeza pós-sucesso (arquivar backup/limpar pacotes/aplicar sistemas sem script) de {sistema} -- a atualização em si já está confirmada e NÃO foi revertida.", sistema);
+            }
+
             return true;
         }
         catch (Exception ex)
