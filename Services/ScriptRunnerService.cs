@@ -113,6 +113,7 @@ public class ScriptRunnerService
             _logger.LogInformation("Aplicando script: {nome}", nomeArquivo);
             try
             {
+                await GarantirTerminadorAsync(scriptPath, sqlContent, cancellationToken);
                 await RunIsqlAsync(dbPath, scriptPath, cancellationToken);
             }
             catch (Exception ex) when (ObjetoJaExisteNoErro(ex))
@@ -159,6 +160,27 @@ public class ScriptRunnerService
         string relativo = Path.GetRelativePath(pacotesPath, caminhoScript);
         int separadores = relativo.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar);
         return separadores <= 1;
+    }
+
+    // BScript.exe e o IBExpert executam o SQL sem exigir ";" final (mandam o texto inteiro pra
+    // API do Firebird como um comando só) -- confirmado contra Firebird real: o MESMO
+    // "ALTER TABLE ... ADD ... DEFAULT 'False'" sem ";" falha no isql (sem erro de sintaxe --
+    // chega no fim do arquivo com o comando ainda "aberto" e devolve "unexpected end of
+    // command"), mas com o ";" roda limpo e cria a coluna. Sobrescreve o arquivo dentro da pasta
+    // de trabalho (não o pacote original baixado) garantindo o terminador antes do isql ler.
+    //
+    // Scripts com corpo de trigger/procedure que usam "SET TERM" pra outro terminador (ex. "^")
+    // e resetam pra ";" no final (convenção comum) não são afetados: nesse ponto o terminador já
+    // voltou a ser ";", então o ";" extra vira só um comando vazio, inofensivo. A quebra de linha
+    // antes do ";" evita que ele seja engolido por um "--comentário" sem quebra de linha no fim
+    // do arquivo.
+    private static async Task GarantirTerminadorAsync(string scriptPath, string sqlContent, CancellationToken cancellationToken)
+    {
+        string aparado = sqlContent.TrimEnd();
+        if (aparado.Length > 0 && !aparado.EndsWith(';'))
+        {
+            await File.WriteAllTextAsync(scriptPath, aparado + "\n;\n", cancellationToken);
+        }
     }
 
     // Firebird responde em inglês independente do locale da instância, mas nem todo tipo de

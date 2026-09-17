@@ -95,6 +95,37 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_sem_ponto_e_virgula_final_e_aplicado_mesmo_assim()
+    {
+        // Achado real (cliente Bredas): scripts gerados pra rodar no BScript.exe/IBExpert nem
+        // sempre terminam com ";" -- os dois executam o texto inteiro como um comando só, sem
+        // exigir terminador. O isql (usado aqui) exige, e sem ele falha com "unexpected end of
+        // command" mesmo a sintaxe estando perfeita -- confirmado contra Firebird real. O agente
+        // precisa aplicar esses scripts do mesmo jeito que o BScript/IBExpert já aplicavam.
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            junior.ExecutarNaoConsulta("CREATE TABLE CONF_EMP_COMPLEMENTO3 (ID INTEGER);");
+            File.WriteAllText(
+                Path.Combine(pasta, "Cria_campo_sem_pv.sql"),
+                "ALTER TABLE CONF_EMP_COMPLEMENTO3\nADD USA_BANDEIRA_DEFAULT VARCHAR(6)\nDEFAULT 'False'");
+
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            Assert.Contains("Cria_campo_sem_pv.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
+            Assert.True(new DatabaseService(TestAmbiente.Config)
+                .VerificarObjetoDdl(junior.CaminhoArquivo, "ALTER TABLE CONF_EMP_COMPLEMENTO3 ADD USA_BANDEIRA_DEFAULT VARCHAR(6)")
+                .JaExiste);
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Script_de_tipo_nao_reconhecido_cujo_objeto_ja_existe_e_marcado_aplicado_sem_reportar_erro()
     {
         // Mesmo cenário legado do teste acima (objeto criado décadas atrás, nunca registrado em
