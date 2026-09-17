@@ -47,8 +47,15 @@ SISTEMAS_COM_SCRIPT=
 ; PROCEDURE"), onde nenhuma correção automática resolve porque o proprio arquivo esta incompleto.
 ; So' o nome do arquivo, sem caminho -- fica pendente pra sempre (sem erro reportado) ate alguem
 ; corrigir o arquivo de origem e tirar da lista.
-; Ex.: SCRIPTS_IGNORADOS=20241009Altera_Procedure_Inventario_NFCe.sql
-SCRIPTS_IGNORADOS=
+;
+; A lista abaixo ja vem preenchida como default: sao scripts legados do proprio B_Vendas (nao
+; especificos de um cliente -- o mesmo historico de Scripts-BVendas se repete em qualquer
+; instalacao do produto), confirmados quebrados rodando os 1027 scripts reais contra um JUNIOR.fdb
+; de producao (nome de tabela que nao bate mais com o banco real, coluna/constraint ja apagada
+; manualmente, corpo de trigger/procedure incompleto ou com erro de sintaxe de origem). Se um
+; cliente especifico corrigir um desses arquivos na propria copia (ex.: adicionando um "^" que
+; faltava), tira ele desta lista no atualizador.ini DESSE cliente -- nao precisa mexer aqui.
+SCRIPTS_IGNORADOS=20241009Altera_Procedure_Inventario_NFCe.sql,20070409Cria_campo_icms_tab_empresa.sql,20070409Cria_campo_preco_dolar_tab_empresa.sql,20070409Cria_campo_utiliza_grade_produto_tab_empresa.sql,20071220Cria_campos_atualiza_saldos_tabela_empresa.sql,20080102Cria_campos_atualiza_validade_lote_tabela_empresa.sql,20110114Cria_campo_CAS_DEC_QTDE_Tabela_Empresa.sql,20110114Cria_campo_CAS_DEC_VALOR_Tabela_Empresa.sql,20110114Cria_campo_EMP_UTIL_PRECO_CUSTO_TAB_PROD_Tabela_Empresa.sql,20110114Valor_campo_CAS_DEC_QTDE_Tabela_Empresa.sql,20110114Valor_campo_EMP_CAS_DEC_VALOR_Tabela_Empresa.sql,20110114Valor_campo_EMP_UTIL_PRECO_CUSTO_TAB_PROD_Tabela_Empresa.sql,20200204Cria_campo_CODTABPRECO_em_FSPEDIDOITENS.sql,20230116Altera_tabela_PPP_EXCLUIDO_adiciona_motivo.sql,20080129Deleta_Relaciona_tabela_processo.sql,20080130Deleta_campo_tabela_receita_processo.sql,20170508Aparaga_trigger_CHECKOUT_NATOP_BIU100.sql,20200813Altera_Campos_Tabela_Nutricional.sql,20220225Cria_Trigger_PRE_PEDIDO_ITENS_CANCELADOS_AU0.sql,20260416Altera_Trigger_ITEM_PROD_INS_RECEITA_REQUISICA.sql
 
 ; Precisa bater com o AGENT_API_TOKEN configurado no servidor (web/server/.env).
 API_TOKEN=
