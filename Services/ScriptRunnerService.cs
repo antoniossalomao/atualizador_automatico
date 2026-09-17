@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace AtualizadorERP.Services;
 
 /// <summary>
@@ -113,7 +115,7 @@ public class ScriptRunnerService
             _logger.LogInformation("Aplicando script: {nome}", nomeArquivo);
             try
             {
-                await GarantirTerminadorAsync(scriptPath, sqlContent, cancellationToken);
+                await PrepararScriptParaIsqlAsync(scriptPath, sqlContent, cancellationToken);
                 await RunIsqlAsync(dbPath, scriptPath, cancellationToken);
             }
             catch (Exception ex) when (ObjetoJaExisteNoErro(ex))
@@ -162,23 +164,48 @@ public class ScriptRunnerService
         return separadores <= 1;
     }
 
-    // BScript.exe e o IBExpert executam o SQL sem exigir ";" final (mandam o texto inteiro pra
-    // API do Firebird como um comando só) -- confirmado contra Firebird real: o MESMO
-    // "ALTER TABLE ... ADD ... DEFAULT 'False'" sem ";" falha no isql (sem erro de sintaxe --
-    // chega no fim do arquivo com o comando ainda "aberto" e devolve "unexpected end of
-    // command"), mas com o ";" roda limpo e cria a coluna. Sobrescreve o arquivo dentro da pasta
-    // de trabalho (não o pacote original baixado) garantindo o terminador antes do isql ler.
-    //
-    // Scripts com corpo de trigger/procedure que usam "SET TERM" pra outro terminador (ex. "^")
-    // e resetam pra ";" no final (convenção comum) não são afetados: nesse ponto o terminador já
-    // voltou a ser ";", então o ";" extra vira só um comando vazio, inofensivo. A quebra de linha
-    // antes do ";" evita que ele seja engolido por um "--comentário" sem quebra de linha no fim
-    // do arquivo.
-    private static async Task GarantirTerminadorAsync(string scriptPath, string sqlContent, CancellationToken cancellationToken)
+    // CREATE/ALTER/RECREATE TRIGGER|PROCEDURE e EXECUTE BLOCK têm corpo BEGIN...END com ";"
+    // internos (um por linha do corpo) -- sem o próprio script definir outro terminador (SET
+    // TERM), o isql usa ";" como terminador padrão e quebra o comando no primeiro ";" de DENTRO
+    // do corpo, gerando uma cascata de erros de sintaxe (-104/-206) em vez de UM erro só.
+    // BScript.exe/IBExpert não têm esse problema (mandam o texto inteiro pra API do Firebird como
+    // um comando só, sem parser de terminador). Confirmado contra os 1027 scripts reais do
+    // B_Vendas: todo CREATE/ALTER TRIGGER/PROCEDURE sem "SET TERM" próprio falhava assim -- 45
+    // deles só nesse único pacote. Só envolve quando o script ainda NÃO define seu próprio
+    // terminador (alguns mais novos já trazem "SET TERM" -- envolver de novo aninharia o comando
+    // e quebraria esses).
+    private static readonly Regex PadraoPrecisaSetTerm = new(
+        @"\b(?:CREATE|ALTER|RECREATE)\s+(?:TRIGGER|PROCEDURE)\b|\bEXECUTE\s+BLOCK\b",
+        RegexOptions.IgnoreCase);
+
+    // BScript.exe e o IBExpert também executam o SQL sem exigir ";" final -- confirmado contra
+    // Firebird real: o MESMO "ALTER TABLE ... ADD ... DEFAULT 'False'" sem ";" falha no isql (sem
+    // erro de sintaxe -- chega no fim do arquivo com o comando ainda "aberto" e devolve
+    // "unexpected end of command"), mas com o ";" roda limpo e cria a coluna. Sobrescreve o
+    // arquivo dentro da pasta de trabalho (não o pacote original baixado) antes do isql ler --
+    // seja envolvendo com SET TERM (scripts de trigger/procedure) ou só garantindo o terminador
+    // final (os demais).
+    private static async Task PrepararScriptParaIsqlAsync(string scriptPath, string sqlContent, CancellationToken cancellationToken)
     {
         string aparado = sqlContent.TrimEnd();
-        if (aparado.Length > 0 && !aparado.EndsWith(';'))
+        if (aparado.Length == 0) return;
+
+        bool jaTemSetTerm = sqlContent.Contains("SET TERM", StringComparison.OrdinalIgnoreCase);
+        bool precisaCorpo = !jaTemSetTerm && PadraoPrecisaSetTerm.IsMatch(sqlContent);
+
+        if (precisaCorpo)
         {
+            // Assume que o arquivo inteiro é UM comando só (a convenção real observada: um
+            // "Cria_trigger_X.sql"/"Cria_procedure_X.sql" nunca mistura outro DDL junto) -- troca
+            // o terminador pra "^" antes do corpo e volta pra ";" depois, com o próprio comando
+            // terminado em "^" no lugar do ";" original (se houver).
+            string corpo = aparado.EndsWith(';') ? aparado[..^1] : aparado;
+            await File.WriteAllTextAsync(scriptPath, $"SET TERM ^ ;\n{corpo}^\nSET TERM ; ^\n", cancellationToken);
+        }
+        else if (!jaTemSetTerm && !aparado.EndsWith(';'))
+        {
+            // A quebra de linha antes do ";" evita que ele seja engolido por um "--comentário"
+            // sem quebra de linha no fim do arquivo.
             await File.WriteAllTextAsync(scriptPath, aparado + "\n;\n", cancellationToken);
         }
     }

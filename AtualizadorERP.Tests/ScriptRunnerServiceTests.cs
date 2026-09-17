@@ -126,6 +126,43 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_de_trigger_com_corpo_sem_set_term_e_aplicado_envolvendo_automaticamente()
+    {
+        // Achado real (1027 scripts reais do B_Vendas testados): CREATE/ALTER TRIGGER/PROCEDURE
+        // com corpo BEGIN...END sem o próprio "SET TERM" falha no isql -- o ";" de dentro do
+        // corpo quebra o comando no meio (o terminador padrão do isql é ";"), gerando uma cascata
+        // de erros de sintaxe. O agente precisa envolver automaticamente com "SET TERM ^ ;" /
+        // "SET TERM ; ^", já que os scripts legados nunca trazem isso (não precisavam rodar em
+        // isql antes).
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            junior.ExecutarNaoConsulta("CREATE TABLE TABELA_TRIGGER_TESTE (ID INTEGER, VALOR INTEGER);");
+            File.WriteAllText(
+                Path.Combine(pasta, "Cria_trigger_sem_set_term.sql"),
+                "CREATE TRIGGER TRG_TESTE_BIU0 FOR TABELA_TRIGGER_TESTE\n" +
+                "ACTIVE BEFORE INSERT OR UPDATE POSITION 0\n" +
+                "AS\n" +
+                "BEGIN\n" +
+                "  IF (NEW.VALOR IS NULL) THEN\n" +
+                "    NEW.VALOR = 0;\n" +
+                "  IF (NEW.ID IS NULL) THEN\n" +
+                "    NEW.ID = 1;\n" +
+                "END");
+
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            Assert.Contains("Cria_trigger_sem_set_term.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Script_de_tipo_nao_reconhecido_cujo_objeto_ja_existe_e_marcado_aplicado_sem_reportar_erro()
     {
         // Mesmo cenário legado do teste acima (objeto criado décadas atrás, nunca registrado em
