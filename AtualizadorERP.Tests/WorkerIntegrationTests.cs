@@ -17,9 +17,13 @@ public class WorkerIntegrationTests
 {
     private const string Sistema = "SISTEMA_TESTE";
 
-    private static string NovaPastaPacotes(string pastaTrabalho)
+    // Precisa bater com Worker.PastaPacotesDoSistema ("pacotes\{sistema}", não "pacotes\" direto) --
+    // ProcessarAtualizacao monta o caminho sozinho a partir do sistema, então o pacote de teste
+    // tem que estar exatamente aí, senão RunPendingScriptsAsync lança DirectoryNotFoundException
+    // antes mesmo de chegar nos scripts.
+    private static string NovaPastaPacotes(string pastaTrabalho, string sistema = Sistema)
     {
-        string pastaPacotes = Path.Combine(pastaTrabalho, "pacotes");
+        string pastaPacotes = Path.Combine(pastaTrabalho, "pacotes", sistema);
         Directory.CreateDirectory(pastaPacotes);
         return pastaPacotes;
     }
@@ -78,8 +82,8 @@ public class WorkerIntegrationTests
             // do pedido que motivou essa mudança: um backup que morre no mesmo ciclo que nasce não
             // serve pra nada em caso de precisar restaurar depois.
             var backupsGravados = Directory.GetFiles(pastaBackups, "*.fbk");
-            Assert.Contains(backupsGravados, f => Path.GetFileName(f).StartsWith("JUNIOR_PRE_9_9_9_"));
-            Assert.Contains(backupsGravados, f => Path.GetFileName(f).StartsWith("JUNIOR_POS_9_9_9_"));
+            Assert.Contains(backupsGravados, f => Path.GetFileName(f).StartsWith($"JUNIOR_PRE_{Sistema}_9_9_9_"));
+            Assert.Contains(backupsGravados, f => Path.GetFileName(f).StartsWith($"JUNIOR_POS_{Sistema}_9_9_9_"));
         }
         finally
         {
@@ -189,7 +193,7 @@ public class WorkerIntegrationTests
             var config = TestAmbiente.NovaConfiguracao(pastaBackups: pastaBackups, backupsParaManter: 2);
             var worker = NovoWorkerParaPodar(config);
 
-            InvocarArquivarBackups(worker, Path.Combine(pastaTrabalho, "inexistente_pre.fbk"), Path.Combine(pastaTrabalho, "inexistente_pos.fbk"), "9.9.9");
+            InvocarArquivarBackups(worker, "BVENDAS_TESTE", Path.Combine(pastaTrabalho, "inexistente_pre.fbk"), Path.Combine(pastaTrabalho, "inexistente_pos.fbk"), "9.9.9");
 
             // 2 ciclos mantidos = 4 arquivos (pré+pós cada), os 3 mais antigos (do loop acima)
             // descartados, restando só os 2 mais recentes dele.
@@ -259,10 +263,10 @@ public class WorkerIntegrationTests
     // ArquivarBackups é privado (detalhe de implementação de ProcessarAtualizacao) -- via
     // reflection só neste teste focado na poda, pra não precisar rodar o ciclo completo (gfix/
     // gbak/scripts reais) só pra testar "mantém os últimos N arquivos".
-    private static void InvocarArquivarBackups(Worker worker, string preBkp, string posBkp, string versaoAlvo)
+    private static void InvocarArquivarBackups(Worker worker, string sistema, string preBkp, string posBkp, string versaoAlvo)
     {
         var metodo = typeof(Worker).GetMethod("ArquivarBackups", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        metodo.Invoke(worker, new object[] { preBkp, posBkp, versaoAlvo });
+        metodo.Invoke(worker, new object[] { sistema, preBkp, posBkp, versaoAlvo });
     }
 
     [Fact]
