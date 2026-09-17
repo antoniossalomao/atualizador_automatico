@@ -225,21 +225,33 @@ public class ScriptRunnerService
         if (aparado.Length == 0) return;
 
         bool jaTemSetTerm = sqlContent.Contains("SET TERM", StringComparison.OrdinalIgnoreCase);
-        var match = jaTemSetTerm ? null : PadraoPrecisaSetTerm.Match(aparado);
+        var matches = jaTemSetTerm ? null : PadraoPrecisaSetTerm.Matches(aparado);
 
-        if (match is { Success: true })
+        if (matches is { Count: > 0 })
         {
-            // Só envolve A PARTIR do comando com corpo -- tudo ANTES dele fica intacto, sob o
-            // terminador ";" padrão. Achado num script real: "DROP TRIGGER X;\nSET SQL DIALECT
-            // 3;\nSET NAMES ISO8859_1;\n\nCREATE OR ALTER TRIGGER X ... AS BEGIN...END" -- uma
-            // primeira versão desta correção envolvia o ARQUIVO INTEIRO, engolindo o ";" desses
+            // Só envolve A PARTIR do primeiro comando com corpo -- tudo ANTES dele fica intacto,
+            // sob o terminador ";" padrão. Achado num script real: "DROP TRIGGER X;\nSET SQL
+            // DIALECT 3;\nSET NAMES ISO8859_1;\n\nCREATE OR ALTER TRIGGER X ... AS BEGIN...END" --
+            // uma primeira versão desta correção envolvia o ARQUIVO INTEIRO, engolindo o ";" desses
             // comandos anteriores (viravam texto dentro do "^") e quebrando o parser logo no
-            // "SET SQL DIALECT" (erro "Token unknown ... SET"). Só o comando com corpo (a partir
-            // daqui) precisa do terminador alternativo.
-            string antes = aparado[..match.Index];
-            string comando = aparado[match.Index..];
-            if (comando.EndsWith(';')) comando = comando[..^1];
-            await File.WriteAllTextAsync(scriptPath, $"{antes}SET TERM ^ ;\n{comando}^\nSET TERM ; ^\n", cancellationToken);
+            // "SET SQL DIALECT" (erro "Token unknown ... SET").
+            //
+            // Cada match vira SEU PRÓPRIO bloco "SET TERM ^ ; ... ^ SET TERM ; ^" (do início deste
+            // match até o início do próximo, ou fim do arquivo pro último) -- um script com dois
+            // CREATE/ALTER TRIGGER|PROCEDURE (sem SET TERM próprio) precisaria disso, senão os dois
+            // comandos ficariam concatenados dentro de um único "^", que o isql rejeitaria como
+            // sintaxe inválida.
+            string antes = aparado[..matches[0].Index];
+            var partes = new List<string> { antes };
+            for (int i = 0; i < matches.Count; i++)
+            {
+                int inicio = matches[i].Index;
+                int fim = i + 1 < matches.Count ? matches[i + 1].Index : aparado.Length;
+                string comando = aparado[inicio..fim].TrimEnd();
+                if (comando.EndsWith(';')) comando = comando[..^1];
+                partes.Add($"SET TERM ^ ;\n{comando}^\nSET TERM ; ^\n");
+            }
+            await File.WriteAllTextAsync(scriptPath, string.Concat(partes), cancellationToken);
         }
         else if (!jaTemSetTerm && !aparado.EndsWith(';'))
         {

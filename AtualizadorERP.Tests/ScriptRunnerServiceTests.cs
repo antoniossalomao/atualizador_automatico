@@ -239,6 +239,49 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_com_duas_triggers_sem_set_term_envolve_cada_uma_em_seu_proprio_bloco()
+    {
+        // Achado na revisão de código (2026-09-17): a primeira versão do envolvimento automático
+        // com SET TERM só localizava o PRIMEIRO CREATE/ALTER/RECREATE TRIGGER|PROCEDURE e envolvia
+        // dele até o FIM DO ARQUIVO inteiro como um comando só -- um script com duas definições
+        // (sem SET TERM próprio) ficaria com as duas concatenadas dentro de um único "^", que o
+        // isql rejeitaria como sintaxe inválida. Precisa de um bloco "SET TERM ^ ; ... ^" por
+        // comando, não um só pro arquivo inteiro.
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            junior.ExecutarNaoConsulta("CREATE TABLE TABELA_MULTI_TRIGGER_TESTE (ID INTEGER, VALOR INTEGER);");
+            File.WriteAllText(
+                Path.Combine(pasta, "Cria_duas_triggers_sem_set_term.sql"),
+                "CREATE TRIGGER TRG_MULTI_TESTE_A FOR TABELA_MULTI_TRIGGER_TESTE\n" +
+                "ACTIVE BEFORE INSERT POSITION 0\n" +
+                "AS\n" +
+                "BEGIN\n" +
+                "  IF (NEW.VALOR IS NULL) THEN\n" +
+                "    NEW.VALOR = 0;\n" +
+                "END\n" +
+                "CREATE TRIGGER TRG_MULTI_TESTE_B FOR TABELA_MULTI_TRIGGER_TESTE\n" +
+                "ACTIVE BEFORE UPDATE POSITION 0\n" +
+                "AS\n" +
+                "BEGIN\n" +
+                "  IF (NEW.ID IS NULL) THEN\n" +
+                "    NEW.ID = 1;\n" +
+                "END");
+
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            Assert.Contains("Cria_duas_triggers_sem_set_term.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
+            Assert.Equal(2, Convert.ToInt32(junior.ExecutarEscalar("SELECT COUNT(*) FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME IN ('TRG_MULTI_TESTE_A', 'TRG_MULTI_TESTE_B')")));
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Script_em_ScriptsIgnorados_nunca_roda_e_nao_reporta_erro()
     {
         // Achado real: 20241009Altera_Procedure_Inventario_NFCe.sql, um script legado do B_Vendas
