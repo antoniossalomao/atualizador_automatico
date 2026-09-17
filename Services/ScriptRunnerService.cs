@@ -187,8 +187,14 @@ public class ScriptRunnerService
     // deles só nesse único pacote. Só envolve quando o script ainda NÃO define seu próprio
     // terminador (alguns mais novos já trazem "SET TERM" -- envolver de novo aninharia o comando
     // e quebraria esses).
+    // "CREATE\s+(?:OR\s+ALTER\s+)?" antes de "ALTER" sozinho: sem o ramo composto, "CREATE OR
+    // ALTER TRIGGER X" casava a partir do "ALTER" (a busca por posição mais à esquerda encontra
+    // "CREATE " mas falha ali porque depois vem "OR", não "TRIGGER"/"PROCEDURE", e só then acha
+    // "ALTER TRIGGER" mais adiante) -- cortando o comando ao meio ("CREATE OR " de um lado,
+    // "ALTER TRIGGER..." do outro, sintaxe inválida). Com o ramo composto, a busca já casa a
+    // partir do "CREATE", que é a posição correta.
     private static readonly Regex PadraoPrecisaSetTerm = new(
-        @"\b(?:CREATE|ALTER|RECREATE)\s+(?:TRIGGER|PROCEDURE)\b|\bEXECUTE\s+BLOCK\b",
+        @"\bCREATE\s+(?:OR\s+ALTER\s+)?(?:TRIGGER|PROCEDURE)\b|\bALTER\s+(?:TRIGGER|PROCEDURE)\b|\bRECREATE\s+(?:TRIGGER|PROCEDURE)\b|\bEXECUTE\s+BLOCK\b",
         RegexOptions.IgnoreCase);
 
     // BScript.exe e o IBExpert também executam o SQL sem exigir ";" final -- confirmado contra
@@ -204,16 +210,21 @@ public class ScriptRunnerService
         if (aparado.Length == 0) return;
 
         bool jaTemSetTerm = sqlContent.Contains("SET TERM", StringComparison.OrdinalIgnoreCase);
-        bool precisaCorpo = !jaTemSetTerm && PadraoPrecisaSetTerm.IsMatch(sqlContent);
+        var match = jaTemSetTerm ? null : PadraoPrecisaSetTerm.Match(aparado);
 
-        if (precisaCorpo)
+        if (match is { Success: true })
         {
-            // Assume que o arquivo inteiro é UM comando só (a convenção real observada: um
-            // "Cria_trigger_X.sql"/"Cria_procedure_X.sql" nunca mistura outro DDL junto) -- troca
-            // o terminador pra "^" antes do corpo e volta pra ";" depois, com o próprio comando
-            // terminado em "^" no lugar do ";" original (se houver).
-            string corpo = aparado.EndsWith(';') ? aparado[..^1] : aparado;
-            await File.WriteAllTextAsync(scriptPath, $"SET TERM ^ ;\n{corpo}^\nSET TERM ; ^\n", cancellationToken);
+            // Só envolve A PARTIR do comando com corpo -- tudo ANTES dele fica intacto, sob o
+            // terminador ";" padrão. Achado num script real: "DROP TRIGGER X;\nSET SQL DIALECT
+            // 3;\nSET NAMES ISO8859_1;\n\nCREATE OR ALTER TRIGGER X ... AS BEGIN...END" -- uma
+            // primeira versão desta correção envolvia o ARQUIVO INTEIRO, engolindo o ";" desses
+            // comandos anteriores (viravam texto dentro do "^") e quebrando o parser logo no
+            // "SET SQL DIALECT" (erro "Token unknown ... SET"). Só o comando com corpo (a partir
+            // daqui) precisa do terminador alternativo.
+            string antes = aparado[..match.Index];
+            string comando = aparado[match.Index..];
+            if (comando.EndsWith(';')) comando = comando[..^1];
+            await File.WriteAllTextAsync(scriptPath, $"{antes}SET TERM ^ ;\n{comando}^\nSET TERM ; ^\n", cancellationToken);
         }
         else if (!jaTemSetTerm && !aparado.EndsWith(';'))
         {
@@ -260,9 +271,15 @@ public class ScriptRunnerService
         // comando de outro processo é visível localmente (Gerenciador de Tarefas, WMI), o
         // ambiente não. "-i" faz o isql tratar o script como entrada e sair sozinho ao final --
         // sem isso ele fica esperando comando interativo (igual acontecia com a tela do BScript).
+        //
+        // "-ch ISO8859_1": mesmo charset que DatabaseService.GetConnectionString já usa (ver
+        // comentário lá) -- sem ele, o isql conecta com o charset padrão da instalação, que não
+        // bate com os scripts legados que trazem seu próprio "SET NAMES ISO8859_1" (convenção
+        // "_ANSI" nos nomes de arquivo, achada nos scripts reais do B_Vendas). Confirmado contra
+        // Firebird real: o MESMO script falha com "Malformed string" sem "-ch" e roda limpo com.
         await _processService.RunProcessAsync(
             _config.IsqlPath,
-            new[] { connectionTarget, "-i", scriptPath },
+            new[] { connectionTarget, "-i", scriptPath, "-ch", "ISO8859_1" },
             ScriptTimeout,
             cancellationToken,
             new Dictionary<string, string> { ["ISC_USER"] = _config.DbUser, ["ISC_PASSWORD"] = _config.DbPassword });

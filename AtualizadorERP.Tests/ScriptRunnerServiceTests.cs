@@ -163,6 +163,49 @@ public class ScriptRunnerServiceTests
     }
 
     [Fact]
+    public async Task Script_com_DROP_e_SET_antes_do_corpo_envolve_so_a_partir_do_comando_com_corpo()
+    {
+        // Achado real (1027 scripts reais do B_Vendas): "20260121Altera_Trigger_PRE_PEDIDO_AU0_ANSI.sql"
+        // tem "DROP TRIGGER X;\nSET SQL DIALECT 3;\nSET NAMES ISO8859_1;\n\nCREATE OR ALTER TRIGGER
+        // X ... AS BEGIN...END" -- uma primeira versão da correção do SET TERM envolvia o ARQUIVO
+        // INTEIRO, engolindo o ";" desses comandos anteriores (viravam texto dentro do "^") e
+        // quebrando o parser logo no "SET SQL DIALECT" ("Token unknown ... SET"). Só o
+        // CREATE/ALTER TRIGGER (com corpo) deve ser envolvido, o que vem antes fica sob ";".
+        using var junior = FirebirdTestDatabase.CriarJunior();
+        var pasta = NovaPastaPacotes();
+        try
+        {
+            junior.ExecutarNaoConsulta("CREATE TABLE TABELA_DROP_ANTES_TESTE (ID INTEGER, VALOR INTEGER);");
+            junior.ExecutarNaoConsulta(
+                "CREATE TRIGGER TRG_DROP_ANTES_TESTE FOR TABELA_DROP_ANTES_TESTE ACTIVE BEFORE INSERT POSITION 0 AS BEGIN END");
+            File.WriteAllText(
+                Path.Combine(pasta, "Altera_trigger_com_drop_antes.sql"),
+                "DROP TRIGGER TRG_DROP_ANTES_TESTE;\n" +
+                "SET SQL DIALECT 3;\n" +
+                "SET NAMES ISO8859_1;\n" +
+                "\n" +
+                "CREATE OR ALTER TRIGGER TRG_DROP_ANTES_TESTE FOR TABELA_DROP_ANTES_TESTE\n" +
+                "ACTIVE BEFORE INSERT POSITION 0\n" +
+                "AS\n" +
+                "BEGIN\n" +
+                "  IF (NEW.VALOR IS NULL) THEN\n" +
+                "    NEW.VALOR = 0;\n" +
+                "  IF (NEW.ID IS NULL) THEN\n" +
+                "    NEW.ID = 1;\n" +
+                "END");
+
+            int falhas = await _scriptRunnerService.RunPendingScriptsAsync(junior.CaminhoArquivo, pasta, "00000000000000", "SISTEMA_TESTE");
+
+            Assert.Equal(0, falhas);
+            Assert.Contains("Altera_trigger_com_drop_antes.sql", new DatabaseService(TestAmbiente.Config).GetScriptsAplicados(junior.CaminhoArquivo));
+        }
+        finally
+        {
+            Directory.Delete(pasta, true);
+        }
+    }
+
+    [Fact]
     public async Task Script_em_ScriptsIgnorados_nunca_roda_e_nao_reporta_erro()
     {
         // Achado real: 20241009Altera_Procedure_Inventario_NFCe.sql, um script legado do B_Vendas
