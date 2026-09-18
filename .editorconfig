@@ -1,0 +1,88 @@
+# Convenções de arquivo e de estilo C#. Existe para que "quem abriu com outro
+# editor" não gere um diff inteiro só de espaço em branco, e para que as
+# convenções do .NET sejam aplicadas pelo próprio editor, não por revisão.
+root = true
+
+[*]
+charset = utf-8
+# LF, nao CRLF, mesmo sendo um projeto Windows: o repositorio inteiro ja esta
+# em LF, e o .gitattributes ao lado garante que continue. Editor e git dizendo
+# a mesma coisa evita o diff de arquivo inteiro por mudanca de fim de linha.
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{json,yml,yaml}]
+indent_size = 2
+
+[*.{csproj,props,targets}]
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+
+# --- Organização de usings ---
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# --- Nomenclatura: campo privado em _camelCase ---
+# O padrão já seguido em todo o código (_logger, _config, _apiService). Deixar
+# explícito faz o editor avisar quem divergir, em vez de a divergência só
+# aparecer na revisão.
+dotnet_naming_rule.campos_privados_com_underscore.severity = suggestion
+dotnet_naming_rule.campos_privados_com_underscore.symbols = campo_privado
+dotnet_naming_rule.campos_privados_com_underscore.style = prefixo_underscore
+
+dotnet_naming_symbols.campo_privado.applicable_kinds = field
+dotnet_naming_symbols.campo_privado.applicable_accessibilities = private
+dotnet_naming_symbols.campo_privado.required_modifiers =
+
+dotnet_naming_style.prefixo_underscore.required_prefix = _
+dotnet_naming_style.prefixo_underscore.capitalization = camel_case
+
+# --- Membros públicos em PascalCase ---
+dotnet_naming_rule.membros_publicos_pascal.severity = suggestion
+dotnet_naming_rule.membros_publicos_pascal.symbols = membro_publico
+dotnet_naming_rule.membros_publicos_pascal.style = pascal
+
+dotnet_naming_symbols.membro_publico.applicable_kinds = property,method,event,class,struct,interface,enum
+dotnet_naming_symbols.membro_publico.applicable_accessibilities = public,internal,protected
+
+dotnet_naming_style.pascal.capitalization = pascal_case
+
+# --- Preferências de linguagem já praticadas no código ---
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_style_var_for_built_in_types = false:silent
+csharp_style_expression_bodied_methods = when_on_single_line:silent
+csharp_prefer_braces = when_multiline:silent
+dotnet_style_prefer_conditional_expression_over_return = false:silent
+
+# --- Analisadores promovidos a aviso (o build usa -warnaserror, entao viram erro) ---
+#
+# O nivel padrao do .NET 8 ja passa limpo neste projeto. Em vez de subir o
+# AnalysisMode inteiro -- "Minimum" traz 14 avisos e "Recommended" traz 114,
+# a maioria irrelevante aqui (ConfigureAwait num worker sem contexto de
+# sincronizacao, LoggerMessage por microperformance) --, so as regras que
+# pegam defeito de verdade neste contexto sao ligadas, uma a uma.
+#
+# Um portao com 114 avisos que ninguem le nao e' portao. Estes tres sao.
+
+# Token de cancelamento nao propagado: num servico do Windows, e' a diferenca
+# entre parar quando mandam parar e o gerenciador de servicos matar o processo
+# achando que travou. Ja pegou a conferencia de hash de pacote.
+dotnet_diagnostic.CA2016.severity = warning
+
+# Algoritmo criptografico fraco. Ha exatamente um uso legitimo de SHA1 no
+# projeto (o campo HASHEXE, exigido pelo formato do ERP legado), suprimido no
+# proprio ponto com a justificativa escrita. Qualquer uso NOVO deve doer.
+dotnet_diagnostic.CA5350.severity = warning
+dotnet_diagnostic.CA5351.severity = warning
+
+# JsonSerializerOptions recriado a cada chamada joga fora o cache de metadados
+# de tipo que o .NET guarda dentro da instancia.
+dotnet_diagnostic.CA1869.severity = warning

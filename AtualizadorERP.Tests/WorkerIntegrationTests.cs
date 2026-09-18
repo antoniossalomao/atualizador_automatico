@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using AtualizadorERP.Models;
 using AtualizadorERP.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -13,6 +14,12 @@ namespace AtualizadorERP.Tests;
 /// produção. Fase 2 (autorização pelo ERP Delphi) não existe ainda, então o teste simula o mesmo
 /// jeito que o teste manual simulou: grava STATUS=AUTORIZADO direto no banco antes de chamar.
 /// </summary>
+/// <remarks>
+/// Marcada com <c>Requer=Firebird</c>: estes testes abrem conexão com um Firebird 2.5 real
+/// instalado na máquina. O CI não tem Firebird, então roda só o subconjunto sem essa marca
+/// (ver .github/workflows/build.yml) -- estes precisam ser rodados localmente antes de publicar.
+/// </remarks>
+[Trait("Requer", "Firebird")]
 public class WorkerIntegrationTests
 {
     private const string Sistema = "SISTEMA_TESTE";
@@ -69,7 +76,12 @@ public class WorkerIntegrationTests
             // sempre "True", e VERSAO cai pra versaoNova quando o exe (fake, neste teste) não tem
             // FileVersion embutido.
             string caminhoExeEsperado = Path.Combine(Path.GetDirectoryName(bexe.CaminhoArquivo)!, "produto_teste.exe");
+#pragma warning disable CA5350 // SHA1 de proposito: o teste TEM que usar o mesmo algoritmo que
+            // o DatabaseService grava em HASHEXE, senao nao estaria conferindo nada. O algoritmo e'
+            // exigido pelo formato do BEXE.fdb do ERP legado -- ver o comentario em
+            // DatabaseService.InjetarNovosBinarios.
             string hashEsperado = Convert.ToHexString(SHA1.HashData(conteudoExe));
+#pragma warning restore CA5350
             Assert.Equal(hashEsperado, bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoExeEsperado}'"));
             Assert.Equal("True", bexe.ExecutarEscalar($"SELECT VERSAOATUALIZADA FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoExeEsperado}'"));
             Assert.Equal("9.9.9", bexe.ExecutarEscalar($"SELECT VERSAO FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoExeEsperado}'"));
@@ -239,7 +251,12 @@ public class WorkerIntegrationTests
             Assert.Equal("2.0.0", databaseService.GetVersaoConfirmada(junior.CaminhoArquivo, SistemaSemScript));
 
             string caminhoNfeEsperado = Path.Combine(pastaCliente, "nfe_teste.exe");
+#pragma warning disable CA5350 // SHA1 de proposito: o teste TEM que usar o mesmo algoritmo que
+            // o DatabaseService grava em HASHEXE, senao nao estaria conferindo nada. O algoritmo e'
+            // exigido pelo formato do BEXE.fdb do ERP legado -- ver o comentario em
+            // DatabaseService.InjetarNovosBinarios.
             string hashEsperado = Convert.ToHexString(SHA1.HashData(conteudoNfe));
+#pragma warning restore CA5350
             Assert.Equal(hashEsperado, bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoNfeEsperado}'"));
             Assert.False(Directory.Exists(pastaPacotesSemScript));
         }

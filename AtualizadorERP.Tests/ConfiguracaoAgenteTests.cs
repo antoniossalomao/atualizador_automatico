@@ -57,7 +57,10 @@ public class ConfiguracaoAgenteTests
         }
     }
 
+    // Unico teste desta classe que precisa dos binarios do Firebird existindo de verdade: os
+    // outros dois exercitam caminhos de ERRO, que falham antes de qualquer checagem de arquivo.
     [Fact]
+    [Trait("Requer", "Firebird")]
     public void Ini_com_ferramentas_validas_carrega_sem_lancar()
     {
         string caminhoIni = NovoIni(

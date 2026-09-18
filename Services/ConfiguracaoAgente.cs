@@ -1,10 +1,6 @@
-namespace AtualizadorERP.Services;
+using AtualizadorERP.Models;
 
-/// <summary>Um sistema que este agente pode cuidar, e o nome do executável que identifica se o
-/// cliente atual realmente tem esse sistema instalado (ex.: Nome="B_NFe", NomeExeEsperado=
-/// "B_NFE.exe" -- o nome do sistema no painel e o nome do arquivo real não batem sempre, então
-/// não dá pra inferir um a partir do outro).</summary>
-public sealed record SistemaConfigurado(string Nome, string NomeExeEsperado);
+namespace AtualizadorERP.Services;
 
 /// <summary>
 /// Lê "atualizador.ini" ao lado do executável publicado. Substitui as variáveis de ambiente

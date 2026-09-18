@@ -5,7 +5,46 @@ on:
     branches: [ "main" ]
 
 jobs:
+  # Portao de qualidade: roda ANTES do build/publish, e o job de publicacao depende
+  # dele. Ate 2026-09, este workflow compilava e publicava a release "latest" a cada
+  # push na main sem rodar UM teste sequer -- um agente quebrado ia direto pro link
+  # que os clientes baixam. Este job existe pra fechar exatamente esse buraco.
+  #
+  # Roda so o subconjunto marcado como NAO dependente de Firebird (6 dos 39 testes).
+  # O runner do GitHub nao tem Firebird 2.5 instalado, e os outros 33 abrem conexao
+  # com um servidor real -- eles sao responsabilidade de quem desenvolve, antes de
+  # abrir o PR (ver CONTRIBUTING.md). Nao e' cobertura completa; e' o maior gate
+  # confiavel possivel sem tornar a publicacao refem de instalar um banco legado
+  # dentro do CI.
+  #
+  # Para elevar isso no futuro: instalar o Firebird 2.5 aqui (o instalador oficial
+  # aceita modo silencioso) e trocar o filtro por "dotnet test" puro. Foi deixado de
+  # fora de proposito -- a publicacao hoje FUNCIONA, e trocar um gate confiavel por
+  # um passo de instalacao nao verificado arriscaria quebrar o canal de entrega.
+  testes:
+    runs-on: windows-latest
+
+    steps:
+    - name: Baixar o código do repositório
+      uses: actions/checkout@v7
+
+    - name: Configurar o .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: '8.0.x'
+
+    # "-warnaserror": o projeto compila com 0 warnings hoje, e a intencao e' que
+    # continue assim. Warning que ninguem ve vira warning que ninguem conserta.
+    # O .editorconfig promove tres regras de analisador a aviso (CA2016, CA5350/
+    # CA5351 e CA1869), entao elas viram erro aqui -- ver CONTRIBUTING.md.
+    - name: Compilar a solução (agente + testes) sem warnings
+      run: dotnet build AtualizadorERP.sln -c Release -warnaserror
+
+    - name: Testes que não dependem de Firebird
+      run: dotnet test AtualizadorERP.sln -c Release --no-build --filter "Requer!=Firebird" --logger "console;verbosity=normal"
+
   build:
+    needs: testes
     runs-on: windows-latest
     # O GITHUB_TOKEN default e' read-only em muitos repositorios -- sem isso, o passo
     # "Publicar a release" abaixo (que cria/atualiza a release "latest" e sobe o instalador)

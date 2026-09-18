@@ -9,6 +9,12 @@ namespace AtualizadorERP.Tests;
 /// isolados por processo, scripts já aplicados antes de existir a tabela SCRIPTS, subpastas
 /// (arquivo histórico) ignoradas na execução e um script quebrado não travando o lote.
 /// </summary>
+/// <remarks>
+/// Marcada com <c>Requer=Firebird</c>: estes testes abrem conexão com um Firebird 2.5 real
+/// instalado na máquina. O CI não tem Firebird, então roda só o subconjunto sem essa marca
+/// (ver .github/workflows/build.yml) -- estes precisam ser rodados localmente antes de publicar.
+/// </remarks>
+[Trait("Requer", "Firebird")]
 public class ScriptRunnerServiceTests
 {
     private readonly ScriptRunnerService _scriptRunnerService;

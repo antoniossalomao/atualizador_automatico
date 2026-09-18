@@ -1,11 +1,24 @@
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+
+using AtualizadorERP.Models;
 
 namespace AtualizadorERP.Services;
 
 public class ApiService
 {
+    /// <summary>
+    /// Uma instancia so, reaproveitada em toda desserializacao. `JsonSerializerOptions` e'
+    /// imutavel depois do primeiro uso e cara de construir: o .NET monta e guarda um cache de
+    /// metadados de tipo DENTRO da instancia, entao criar uma nova a cada chamada joga fora esse
+    /// cache e refaz o trabalho todo. Sendo `static readonly`, tambem e' seguro para uso
+    /// concorrente.
+    ///
+    /// `PropertyNameCaseInsensitive` e' o que deixa "sistema"/"notes" do JSON casarem com
+    /// "Sistema"/"Notes" do C# sem precisar de [JsonPropertyName] em cada um (ver Models/).
+    /// </summary>
+    private static readonly JsonSerializerOptions OpcoesJson = new() { PropertyNameCaseInsensitive = true };
+
     private readonly ILogger<ApiService> _logger;
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
@@ -71,7 +84,7 @@ public class ApiService
         var response = await _httpClient.SendAsync(request, timeoutCts.Token);
         await GarantirSucessoComCorpoAsync(response);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var resultado = JsonSerializer.Deserialize<UpdateResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        var resultado = JsonSerializer.Deserialize<UpdateResponse>(json, OpcoesJson);
 
         _logger.LogInformation(
             "Sistema {Sistema}: {Resultado}.",
@@ -99,7 +112,7 @@ public class ApiService
         var response = await _httpClient.SendAsync(request, timeoutCts.Token);
         await GarantirSucessoComCorpoAsync(response);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var resultado = JsonSerializer.Deserialize<AgentStatusResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        var resultado = JsonSerializer.Deserialize<AgentStatusResponse>(json, OpcoesJson);
         return resultado?.Pausado == true;
     }
 
@@ -141,7 +154,12 @@ public class ApiService
             if (!string.IsNullOrWhiteSpace(pkg.Sha256))
             {
                 await using var downloaded = File.OpenRead(filePath);
-                string hash = Convert.ToHexString(await SHA256.HashDataAsync(downloaded)).ToLowerInvariant();
+                // O cancellationToken vai junto: conferir o hash de um pacote grande le o
+                // arquivo inteiro, e sem o token essa leitura ignora o pedido de parada. O
+                // sintoma seria o servico do Windows demorar para encerrar (ou o gerenciador
+                // de servicos matar o processo achando que travou) no meio de um download --
+                // justamente quando parar rapido importa.
+                string hash = Convert.ToHexString(await SHA256.HashDataAsync(downloaded, cancellationToken)).ToLowerInvariant();
                 if (!hash.Equals(pkg.Sha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException($"Hash SHA-256 inválido para {fileName}.");
             }
@@ -254,33 +272,4 @@ public class ApiService
             _logger.LogWarning(ex, "Falha ao enviar log para a API (cliente {Cliente}, sistema {Sistema}, status {Status}).", codigoCliente, sistema, status);
         }
     }
-}
-
-public class UpdateResponse
-{
-    [JsonPropertyName("update_available")]
-    public bool HasUpdate { get; set; }
-    // "Sistema" e "Notes" batem com "sistema"/"notes" do JSON por comparação sem diferenciar
-    // maiúsculas (PropertyNameCaseInsensitive, configurado no Deserialize acima) -- não precisam
-    // de [JsonPropertyName] explícito, diferente de "update_available"/"script_url", que têm
-    // sublinhado no JSON e não batem com o PascalCase do C# nem ignorando maiúsculas.
-    public string Sistema { get; set; } = string.Empty;
-    public string Version { get; set; } = string.Empty;
-    public List<PackageInfo> Packages { get; set; } = new();
-    [JsonPropertyName("script_url")]
-    public string? ScriptUrl { get; set; }
-    public string? Notes { get; set; }
-}
-
-public class PackageInfo
-{
-    public string File { get; set; } = string.Empty;
-    public string Url { get; set; } = string.Empty;
-    [JsonPropertyName("sha256")]
-    public string Sha256 { get; set; } = string.Empty;
-}
-
-public class AgentStatusResponse
-{
-    public bool Pausado { get; set; }
 }

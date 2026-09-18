@@ -325,7 +325,22 @@ public class DatabaseService
                 string nomeArquivoCompleto = Path.Combine(pastaCliente, Path.GetFileName(arquivo));
                 string nomeProduto = Path.GetFileNameWithoutExtension(arquivo);
                 byte[] fileBytes = File.ReadAllBytes(arquivo);
+                // SHA1 aqui NAO e' escolha nossa, e nao deve ser "corrigido" para SHA256.
+                //
+                // O campo HASHEXE pertence ao schema do BEXE.fdb, que e' do ERP Delphi -- um
+                // sistema legado de terceiros que nao esta neste repositorio. O formato foi
+                // confirmado campo a campo contra um arquivo de producao correto (ver README,
+                // secao "Formato gravado em EXECUTAVEIS"): e' o ERP quem le esse hash, com o
+                // algoritmo que ele espera. Gravar SHA256 aqui produziria um valor que o ERP
+                // nao reconhece, e o efeito apareceria no cliente, nao aqui.
+                //
+                // Nao ha exposicao de seguranca nisso: o hash serve de carimbo de versao para
+                // o proprio ERP conferir qual binario esta gravado, nao de prova criptografica
+                // contra adversario. A integridade do que foi BAIXADO e' garantida pelo SHA-256
+                // conferido em ApiService.DownloadPackages, antes de qualquer coisa chegar aqui.
+#pragma warning disable CA5350 // Algoritmo fraco exigido pelo formato do ERP legado -- ver acima.
                 string hash = Convert.ToHexString(SHA1.HashData(fileBytes));
+#pragma warning restore CA5350
                 // Cai pra versaoNova só se o próprio arquivo não tiver versão embutida -- não
                 // deveria acontecer com um binário real do Delphi, mas evita gravar VERSAO vazio.
                 string versaoArquivo = FileVersionInfo.GetVersionInfo(arquivo).FileVersion ?? versaoNova;

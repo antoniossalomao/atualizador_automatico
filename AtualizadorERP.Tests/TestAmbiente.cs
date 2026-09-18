@@ -1,3 +1,4 @@
+using AtualizadorERP.Models;
 using AtualizadorERP.Services;
 
 namespace AtualizadorERP.Tests;

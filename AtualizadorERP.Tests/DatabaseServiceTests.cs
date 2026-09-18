@@ -9,6 +9,12 @@ namespace AtualizadorERP.Tests;
 /// coluna e limites de charset de verdade, como os achados dos itens 1 e 14 do
 /// RISCOS-CONHECIDOS.md, que nenhuma leitura de código pegaria.
 /// </summary>
+/// <remarks>
+/// Marcada com <c>Requer=Firebird</c>: estes testes abrem conexão com um Firebird 2.5 real
+/// instalado na máquina. O CI não tem Firebird, então roda só o subconjunto sem essa marca
+/// (ver .github/workflows/build.yml) -- estes precisam ser rodados localmente antes de publicar.
+/// </remarks>
+[Trait("Requer", "Firebird")]
 public class DatabaseServiceTests
 {
     private const string Sistema = "SISTEMA_TESTE";
@@ -150,7 +156,12 @@ public class DatabaseServiceTests
             Assert.Equal(1, bexe.ContarLinhas($"SELECT 1 FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
             Assert.Equal("True", bexe.ExecutarEscalar($"SELECT VERSAOATUALIZADA FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
             Assert.Equal("2026.08.27", bexe.ExecutarEscalar($"SELECT VERSAO FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
+#pragma warning disable CA5350 // SHA1 de proposito: o teste TEM que usar o mesmo algoritmo que
+            // o DatabaseService grava em HASHEXE, senao nao estaria conferindo nada. O algoritmo e'
+            // exigido pelo formato do BEXE.fdb do ERP legado -- ver o comentario em
+            // DatabaseService.InjetarNovosBinarios.
             string hashEsperado = Convert.ToHexString(SHA1.HashData(conteudo));
+#pragma warning restore CA5350
             Assert.Equal(hashEsperado, bexe.ExecutarEscalar($"SELECT HASHEXE FROM EXECUTAVEIS WHERE NOMEARQUIVO = '{caminhoEsperado}'"));
         }
         finally

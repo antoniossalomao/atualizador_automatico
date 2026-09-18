@@ -1,0 +1,20 @@
+# Normaliza a quebra de linha no repositorio: tudo e' gravado com LF no git,
+# independente do que a ferramenta de quem edita usa no disco.
+#
+# Sem isto, um editor (ou um script) que salve em CRLF faz o git mostrar o
+# ARQUIVO INTEIRO como alterado, e a mudanca de verdade -- duas linhas --
+# desaparece no meio de trezentas. O historico deste repositorio ja esta todo
+# em LF; esta regra e' o que garante que continue.
+* text=auto eol=lf
+
+# Binarios e dados: nunca converter, nunca tentar fazer diff de texto.
+# Os tres ultimos ja estao no .gitignore -- listados aqui tambem porque um
+# "git add -f" pontual (para inspecionar algo) nao pode corromper o arquivo
+# trocando bytes 0x0D por 0x0A no meio de um banco Firebird.
+*.exe   binary
+*.dll   binary
+*.pdf   binary
+*.7z    binary
+*.fdb   binary
+*.fbk   binary
+*.FDB   binary

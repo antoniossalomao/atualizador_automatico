@@ -6,6 +6,9 @@ publicado/
 *.suo
 .vs/
 
+# Relatorios de teste (aparecem quando se roda "dotnet test --logger trx").
+TestResults/
+
 # --- Ferramentas de terceiros que o agente usa em runtime ---
 # O 7za.exe precisa ficar ao lado do executavel publicado, mas e' um binario
 # de terceiros: cada ambiente baixa o seu (ver README).

@@ -1,3 +1,6 @@
+using System.Text.RegularExpressions;
+
+using AtualizadorERP.Models;
 using AtualizadorERP.Services;
 
 namespace AtualizadorERP;
@@ -500,9 +503,46 @@ public class Worker : BackgroundService
     // sistema; se um dia mais de um sistema tiver script, vale revisitar pra podar por sistema.
     private void PodarBackupsAntigos()
     {
+        // Ordena pelo carimbo que esta DENTRO do nome do arquivo, nao por
+        // File.GetCreationTimeUtc. A data de criacao parece a escolha obvia e e' errada aqui,
+        // por tres motivos que se somam:
+        //
+        //   1. no Windows ela tem a granularidade do tick do relogio do sistema (~15,6 ms por
+        //      padrao), entao dois arquivos criados em sequencia podem ter EXATAMENTE a mesma
+        //      data -- e o desempate passa a ser a ordem em que o sistema de arquivos devolveu
+        //      os nomes, que nao e' garantida;
+        //   2. `File.Move` PRESERVA a data de criacao da origem, e e' assim que estes arquivos
+        //      chegam aqui (o gbak grava na pasta de trabalho e ArquivarBackups move). O que a
+        //      data descreve, entao, e' quando o gbak comecou -- nao quando o ciclo terminou;
+        //   3. o NTFS ainda tem "file tunneling": um arquivo recriado com um nome usado ha
+        //      poucos segundos HERDA a data de criacao do anterior.
+        //
+        // O nome, por outro lado, embute "yyyyMMdd_HHmmss" e e' gravado por este proprio codigo.
+        // Comparado como texto, esse formato ja ordena cronologicamente.
+        //
+        // Nao e' preciosismo: podar pela chave errada apaga o backup MAIS NOVO e mantem um
+        // antigo -- exatamente o oposto do que se quer de quem existe para salvar um cliente
+        // depois de uma atualizacao ruim. Encontrado porque o teste de retencao falhava de vez
+        // em quando, sempre por empate de milissegundo.
         var antigos = Directory.GetFiles(_config.PastaBackups, "*.fbk")
-            .OrderByDescending(File.GetCreationTimeUtc)
+            .OrderByDescending(CarimboDoBackup, StringComparer.Ordinal)
+            .ThenByDescending(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
             .Skip(_config.BackupsParaManter * 2);
         foreach (var arquivo in antigos) File.Delete(arquivo);
     }
+
+    /// <summary>
+    /// "yyyyMMdd_HHmmss" extraido do fim do nome do backup (ver <see cref="ArquivarBackups"/>).
+    /// Um arquivo fora desse padrao -- deixado ali a mao, por exemplo -- devolve string vazia e
+    /// vai para o fim da ordenacao, sendo o primeiro candidato a ser podado. E' o comportamento
+    /// desejado: o que este codigo nao reconhece nao deve ocupar uma das vagas reservadas aos
+    /// backups que ele mesmo gerou.
+    /// </summary>
+    private static string CarimboDoBackup(string caminho)
+    {
+        var m = CarimboRegex.Match(Path.GetFileName(caminho));
+        return m.Success ? m.Groups[1].Value : string.Empty;
+    }
+
+    private static readonly Regex CarimboRegex = new(@"_(\d{8}_\d{6})\.fbk$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 }

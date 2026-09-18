@@ -329,15 +329,33 @@ atualizador interno (o que os terminais rodam) não reconhecer a linha:
 ## Organização do código
 
 ```
+AtualizadorERP.sln                solução: o agente + o projeto de testes
 Program.cs                        host do serviço Windows + injeção de dependência
 Worker.cs                         o ciclo: polling, decisão de fase, orquestração das 4 fases
-Services/ConfiguracaoAgente.cs    lê e valida atualizador.ini, resolve caminhos relativos
-Services/ApiService.cs            HTTP com a API central, validação de SHA-256
-Services/DatabaseService.cs       Firebird: estado em SYS_ATUALIZACAO, injeção de BLOB no BEXE
-Services/ExtractionService.cs     invoca o 7za.exe sobre os pacotes baixados
-Services/ScriptRunnerService.cs   aplica os .sql pendentes do pacote via isql, um processo por arquivo, em 2 passadas
-Services/ProcessService.cs        executa processos externos com timeout obrigatório
+
+Models/                           tipos de dados puros -- sem comportamento, sem I/O
+  SistemaConfigurado.cs             um sistema que o agente cuida + o .exe que prova que está instalado
+  UpdateResponse.cs                 resposta de GET /api/agente/verificar
+  PackageInfo.cs                    um arquivo do pacote (URL + SHA-256 esperado)
+  AgentStatusResponse.cs            resposta de GET /api/agente/status (pausado sim/não)
+
+Services/                         tudo que tem comportamento e efeito colateral
+  ConfiguracaoAgente.cs             lê e valida atualizador.ini, resolve caminhos relativos
+  ApiService.cs                     HTTP com a API central, validação de SHA-256
+  DatabaseService.cs                Firebird: estado em SYS_ATUALIZACAO, injeção de BLOB no BEXE
+  ExtractionService.cs              invoca o 7za.exe sobre os pacotes baixados
+  ScriptRunnerService.cs            aplica os .sql pendentes do pacote via isql, um processo por arquivo, em 2 passadas
+  ProcessService.cs                 executa processos externos com timeout obrigatório
+
+AtualizadorERP.Tests/             xUnit -- roda contra Firebird de verdade, não contra mock
 ```
+
+`Models/` e `Services/` separados de propósito: um tipo em `Models/` pode ser
+construído, comparado e serializado sem tocar em disco, rede ou banco, o que é
+o que permite os testes montarem cenários sem subir nada. Antes desta separação
+os DTOs da API moravam no fim de `ApiService.cs` e o `SistemaConfigurado` no
+topo de `ConfiguracaoAgente.cs` -- funcionava, mas escondia os tipos do domínio
+dentro dos arquivos que por acaso os usavam primeiro.
 
 **Toda chamada a processo externo passa pelo `ProcessService` e exige timeout.**
 Isso não é estilo, é segurança: a Fase 3 roda com o banco em
@@ -352,3 +370,26 @@ confirmado contra uma cópia correta (ver seção acima). A tabela `SYS_ATUALIZA
 do `JUNIOR.fdb` **não existe** nesse schema real — por isso o próprio agente a
 cria e garante uma linha por sistema instalado, usando `SISTEMA` como chave
 primária (`DatabaseService.GarantirTabelaSysAtualizacao`).
+
+## Documentação
+
+| Documento | Para quem, e quando |
+|---|---|
+| Este README | Quem vai **instalar** ou **operar** o agente num cliente |
+| [`RISCOS-CONHECIDOS.md`](RISCOS-CONHECIDOS.md) | **Leitura obrigatória.** O que já deu errado, o que ainda não foi validado, o que não pode rodar em cliente real |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Quem vai **alterar o código**: como rodar os testes, e as cinco regras que não se quebram |
+| [`SECURITY.md`](SECURITY.md) | Onde ficam as credenciais, o que protege o quê, e os limites assumidos |
+| [`docs/adr/`](docs/adr/) | As decisões de arquitetura, uma por arquivo, com as alternativas descartadas |
+
+### Qual documento responde o quê
+
+- *"Como instalo isso num cliente?"* → este README, seção **Instalando num cliente**.
+- *"Posso rodar isso em produção?"* → `RISCOS-CONHECIDOS.md`. (Resumo: ainda não, em sistemas com script.)
+- *"Por que a configuração é um `.ini` e não variável de ambiente?"* → [`docs/adr/0001`](docs/adr/0001-configuracao-em-ini.md).
+- *"Por que o agente fica consultando o banco em vez de receber um aviso?"* → [`docs/adr/0002`](docs/adr/0002-polling-em-vez-de-push.md).
+- *"Por que todo processo externo precisa de timeout?"* → [`docs/adr/0003`](docs/adr/0003-timeout-obrigatorio.md).
+- *"Por que não detectar sozinho se o pacote tem script?"* → [`docs/adr/0004`](docs/adr/0004-lista-explicita-de-sistemas-com-script.md).
+- *"Por que um agente só, e não um por sistema?"* → [`docs/adr/0005`](docs/adr/0005-uma-instancia-por-cliente.md).
+
+O painel web que serve as versões a este agente fica em um repositório
+próprio; o contrato entre os dois está na seção **Contrato da API**, acima.
