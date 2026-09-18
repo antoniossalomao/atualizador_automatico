@@ -20,6 +20,10 @@ public class Worker : BackgroundService
 
     private int _falhasConsecutivas = 0;
 
+    // Só para não logar "pausado"/"retomado" a cada ciclo saudável (10s) enquanto o estado não
+    // muda -- ver DeveFicarPausadoAsync.
+    private bool _pausadoAnterior = false;
+
     // Sistemas cuja linha em SYS_ATUALIZACAO já foi garantida nesta execução do serviço -- não
     // são todos os SistemaConfigurado (ver ConfiguracaoAgente.Sistemas), só os que já foram
     // detectados como instalados neste cliente ao menos uma vez. Um HashSet em vez de um bool
@@ -43,6 +47,12 @@ public class Worker : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (await DeveFicarPausadoAsync(stoppingToken))
+            {
+                await Task.Delay(ProximoIntervalo(), stoppingToken);
+                continue;
+            }
+
             bool cicloSaudavel = true;
 
             // Uma instância conhece TODOS os sistemas que a empresa distribui (ver
@@ -193,6 +203,35 @@ public class Worker : BackgroundService
     // como "instalado" (SistemaInstalado já foi checado por ele em ExecuteAsync antes de chegar
     // aqui) -- não precisa de um caso especial pra ele mesmo.
     private bool ExisteSistemaComScriptInstalado() => _config.Sistemas.Any(s => EhSistemaComScript(s.Nome) && SistemaInstalado(s));
+
+    /// <summary>
+    /// Confere junto ao painel se este agente foi pausado remotamente (aba Distribuição, botão
+    /// "Pausar") -- chamado uma vez por ciclo, ANTES de tocar em qualquer sistema, porque a
+    /// pausa é uma decisão sobre o AGENTE inteiro, não sobre um sistema específico. Uma falha
+    /// nesta checagem (API fora do ar, rede) não pode travar o agente: trata como "não pausado"
+    /// e segue o ciclo normalmente -- a falha de conectividade real já vai aparecer (e contar
+    /// para o backoff) no CheckForUpdates de cada sistema logo em seguida.
+    /// </summary>
+    private async Task<bool> DeveFicarPausadoAsync(CancellationToken stoppingToken)
+    {
+        bool pausado;
+        try
+        {
+            pausado = await _apiService.IsAgentPaused(_config.CodigoCliente, stoppingToken);
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Falha ao checar se o agente está pausado. Assumindo que não está.");
+            return false;
+        }
+
+        if (pausado && !_pausadoAnterior)
+            _logger.LogInformation("Agente pausado remotamente pelo painel -- nenhuma atualização será verificada até ser retomado.");
+        else if (!pausado && _pausadoAnterior)
+            _logger.LogInformation("Agente retomado -- voltando a verificar atualizações normalmente.");
+        _pausadoAnterior = pausado;
+        return pausado;
+    }
 
     // Backoff simples: 10s no caminho saudável; cresce até 30 minutos em falhas seguidas, para
     // não martelar disco/rede/API a cada 10 segundos quando algo está persistentemente quebrado

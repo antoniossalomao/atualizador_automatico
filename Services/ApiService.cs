@@ -82,6 +82,28 @@ public class ApiService
     }
 
     /// <summary>
+    /// Consultado a cada ciclo saudável do Worker, ANTES de checar qualquer sistema -- devolve
+    /// se este agente foi pausado remotamente pelo painel (aba Distribuição, botão "Pausar").
+    /// Enquanto pausado, o Worker não verifica nem aplica nenhuma atualização, mas continua de
+    /// pé e voltando a perguntar a cada ciclo -- é reversível a qualquer momento pelo painel,
+    /// sem precisar de acesso à máquina do cliente. Erro de rede/API aqui não deve travar o
+    /// agente: quem chama trata como "não pausado" nesse caso (ver Worker.DeveFicarPausadoAsync).
+    /// </summary>
+    public async Task<bool> IsAgentPaused(string codigoCliente, CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/update/status/{Uri.EscapeDataString(codigoCliente)}");
+        request.Headers.Add("X-Agent-Token", _agentToken);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeoutChecagemELog);
+        var response = await _httpClient.SendAsync(request, timeoutCts.Token);
+        await GarantirSucessoComCorpoAsync(response);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var resultado = JsonSerializer.Deserialize<AgentStatusResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        return resultado?.Pausado == true;
+    }
+
+    /// <summary>
     /// Confere o status da resposta e, em caso de falha, inclui o CORPO da resposta na mensagem
     /// da exceção -- <c>EnsureSuccessStatusCode()</c> descarta esse corpo, então um 401 com
     /// <c>{"error":"token inválido"}</c> virava só "401 Unauthorized" no log, sem o motivo real.
@@ -256,4 +278,9 @@ public class PackageInfo
     public string Url { get; set; } = string.Empty;
     [JsonPropertyName("sha256")]
     public string Sha256 { get; set; } = string.Empty;
+}
+
+public class AgentStatusResponse
+{
+    public bool Pausado { get; set; }
 }
