@@ -1,7 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- "-windows", não só "net8.0": a tela de configuração (UI/SetupForm.cs) precisa do
+         Windows Desktop SDK (WinForms), ver UseWindowsForms abaixo. Não adiciona dependência
+         nova pro cliente: a publicação já é self-contained (dotnet publish -r win-x64,
+         self contained true, ver build.yml), então o runtime desktop já vai embutido no
+         pacote de qualquer jeito. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- "WinExe", não o "Exe" (console) que o SDK Worker usa por padrão: sem isso, toda vez que
+         alguém clica duas vezes no .exe pra abrir a tela de configuração (ver Program.cs) um
+         console preto pisca atrás da janela por um instante. Quando o Windows sobe isto como
+         serviço via SCM, o subsystem do executável não importa; ele nunca teve console mesmo
+         com "Exe". -->
+    <OutputType>WinExe</OutputType>
+    <!-- Mesmo logo do painel web (web/client/assets/logo.png, convertido pra .ico multi-resolução),
+         sem ele o .exe fica com o ícone genérico do .NET tanto no Explorer quanto na barra de
+         tarefas quando a tela roda. SetupForm.cs lê esse MESMO ícone embutido de volta via
+         Icon.ExtractAssociatedIcon em vez de carregar o arquivo separado, uma fonte só. -->
+    <ApplicationIcon>UI\Assets\atualizador.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-AtualizadorERP-12345</UserSecretsId>

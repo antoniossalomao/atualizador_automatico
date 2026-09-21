@@ -371,6 +371,28 @@ public class Worker : BackgroundService
             if (File.Exists(preBkp)) File.Delete(preBkp);
 
             _databaseService.SetStatusAtualizacao(_config.JuniorFdbPath, sistema, "PROCESSANDO", null);
+
+            // Defensivo: normaliza pra "online" antes de pedir "multi" -- gfix só aceita
+            // transição de shutdown ADJACENTE (normal->multi->single->full), então um banco
+            // deixado em "single"/"full" por fora do agente (restore manual, IBExpert, uma
+            // queda no meio de um ciclo anterior) faz o "-shut multi" de baixo falhar direto
+            // com "Target shutdown mode is invalid", preso até alguém entrar no servidor do
+            // cliente e rodar "gfix -online" à mão. Confirmado contra um Firebird real
+            // (JUNIOR_teste.FDB): reproduz esse erro saindo de "single" e "-online" resolve.
+            // Ignora falha de propósito, sem log de erro nem SendLog -- é o caminho ESPERADO
+            // na imensa maioria dos ciclos, quando o banco já está online (testado: "-online"
+            // num banco já online também retorna "Target shutdown mode is invalid", a mesma
+            // mensagem, então não dá pra distinguir "não precisava" de "não adiantou" só pelo
+            // texto do erro -- só o "-shut multi" logo abaixo, que é quem importa, revela isso).
+            try
+            {
+                await _processService.RunProcessAsync(_config.GfixPath, new[] { "-online", alvoJunior }, GfixTimeout, stoppingToken, credenciaisEnv);
+            }
+            catch (Exception exOnlinePreventivo)
+            {
+                _logger.LogDebug(exOnlinePreventivo, "gfix -online preventivo (pré-shutdown) não fez efeito -- normal quando o banco já estava online.");
+            }
+
             // "multi" (manutenção multiusuário), não "full": testado que "full" bloqueia até o
             // SYSDBA -- o isql do ScriptRunnerService (linha abaixo) nunca conseguiria conectar
             // pra aplicar os scripts. "multi" isola os terminais do ERP e mantém acesso

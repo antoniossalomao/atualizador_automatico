@@ -213,7 +213,12 @@ public class ConfiguracaoAgente
     // Parser mínimo de propósito: "CHAVE=valor" por linha, comentários com ";" ou "#", seções
     // "[Nome]" ignoradas (só organizam visualmente o arquivo, sem efeito no parsing -- não há
     // necessidade real de escopo por seção pra uma dúzia de chaves flat).
-    private static Dictionary<string, string> LerIni(string caminho)
+    //
+    // "internal", não "private": UI/SetupForm reaproveita este MESMO parser pra pré-preencher a
+    // tela com o atualizador.ini já existente (reconfiguração) -- duplicar a lógica ali arriscava
+    // as duas leituras divergirem silenciosamente (ex.: um dos dois esquecer de aceitar "#" como
+    // comentário) sem nenhum teste acusando, já que são dois parsers "iguais" só de vista.
+    internal static Dictionary<string, string> LerIni(string caminho)
     {
         var valores = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var linhaCrua in File.ReadAllLines(caminho))

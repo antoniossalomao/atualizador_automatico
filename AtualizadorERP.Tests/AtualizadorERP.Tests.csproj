@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- Precisa acompanhar o TFM do projeto principal (AtualizadorERP.csproj), que virou
+         "net8.0-windows" pra UI/SetupForm.cs (WinForms): um projeto referenciado com TFM
+         "-windows" não é aceito por quem referencia num TFM multiplataforma "puro". -->
+    <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
