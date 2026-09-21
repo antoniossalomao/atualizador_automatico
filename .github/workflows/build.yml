@@ -61,8 +61,13 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
+    # "AtualizadorERP.csproj", nao a solucao: desde que o .sln passou a existir (ver
+    # historico), "dotnet publish" sem projeto explicito resolve pra ele e tenta publicar
+    # TODOS os projetos da solucao com -p:PublishSingleFile=true, inclusive o
+    # AtualizadorERP.Tests -- que nao tem apphost e falha o publish com NETSDK1098
+    # ("Applications published to a single-file are required to use the application host").
     - name: Compilar o projeto
-      run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./Atualizador
+      run: dotnet publish AtualizadorERP.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./Atualizador
 
     # O ".csproj" ja declara "atualizador.ini.example" com CopyToOutputDirectory, e isso
     # funciona numa publicacao unica e limpa (exatamente o que este workflow faz, a cada run,
